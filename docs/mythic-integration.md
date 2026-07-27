@@ -2,13 +2,13 @@
 
 This repository ships an operator-side, offline-only adapter for Apollo's existing `execute_coff` command version `3`. It does not build an implant, contact Mythic, register a file, collect a filesystem snapshot, or write a certificate anywhere. The adapter emits a describe-only task record that pins the callback ID, Apollo version, `execute_coff` version, `go` entrypoint, BOF SHA-256, six binary arguments, and the exact argument bytes expected by the BOF.
 
-Apollo `execute_coff` v3 accepts six `base64` typed arguments and packs each one as a little-endian length-prefixed binary field. The BOF pre-parser and the offline packer use that same field layout:
+Apollo `execute_coff` v3 accepts six `base64` typed arguments and passes `go` a BeaconDataParse-compatible frame: a little-endian `u32` payload length followed by six little-endian length-prefixed binary fields. The BOF pre-parser and the offline packer validate that same intact frame:
 
 ```text
 csr_der, ca_config, template, san_dns, cdc, rmd
 ```
 
-The descriptor also retains Apollo's outer argument frame for review. The `go_buffer_b64` field is the six-field buffer the BOF validates after Apollo's own framing has been removed by the COFF loader.
+The descriptor retains the exact `go` buffer twice for review: `go_buffer_b64` is the canonical intact frame in base64, and `apollo_execute_coff_frame_hex` is the same frame in hex. BeaconDataParse consumes the outer length internally after the BOF pre-parser has validated it.
 
 ## Offline validation
 
@@ -78,4 +78,4 @@ The evidence bundle must retain the CA snapshot record, the revert record, post-
 - The adapter is intentionally pinned to Apollo `execute_coff` command version `3`; it rejects other command schemas instead of guessing.
 - The repository does not submit Mythic tasks or call Mythic APIs. It only emits a reviewable descriptor and validates exported evidence.
 - The repository does not generate CSRs, start SMB/LDAP listeners, perform PKINIT, inspect certificates, collect filesystem snapshots, or patch/revert a CA.
-- The output parser accepts only the BOF's documented text framing and does not infer a live exploit result from incomplete evidence.
+- The output parser accepts only the BOF's documented text framing, including Apollo's canonical newline-free issued-header plus certificate-marker aggregation, and does not infer a live exploit result from incomplete evidence.

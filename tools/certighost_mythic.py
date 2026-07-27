@@ -33,7 +33,8 @@ ISSUED_HEADER_RE = re.compile(
     r"^CERTIGHOST_RESULT disposition=(?P<disposition>-?\d+) "
     r"request_id=(?P<request_id>-?\d+) cert_encoding=base64 "
     r"cert_der_bytes=(?P<cert_der_bytes>\d+) "
-    r"cert_base64_chars=(?P<cert_base64_chars>\d+)$",
+    r"cert_base64_chars=(?P<cert_base64_chars>\d+)"
+    r"(?=\n|CERTIGHOST_CERT_BEGIN\n|\Z)",
     re.MULTILINE,
 )
 CERT_BLOCK_RE = re.compile(
@@ -229,8 +230,7 @@ def validate_inputs(inputs: CertighostInputs) -> None:
     _validate_dns_value(inputs.rmd, "rmd", optional=False)
 
 
-def pack_bof_args(inputs: CertighostInputs) -> bytes:
-    """Return the six-field buffer received by go after Apollo framing is removed."""
+def _pack_bof_payload(inputs: CertighostInputs) -> bytes:
     validate_inputs(inputs)
     packed = bytearray()
     for value in inputs.ordered_fields():
@@ -239,19 +239,34 @@ def pack_bof_args(inputs: CertighostInputs) -> bytes:
     return bytes(packed)
 
 
+def pack_bof_args(inputs: CertighostInputs) -> bytes:
+    """Return the canonical outer frame received intact by go."""
+    payload = _pack_bof_payload(inputs)
+    return struct.pack("<I", len(payload)) + payload
+
+
 def unpack_bof_args(buffer: bytes) -> CertighostInputs:
+    if len(buffer) < 4:
+        raise ValidationError("packed buffer is truncated before the outer length")
+    payload_len = struct.unpack_from("<I", buffer, 0)[0]
+    available_payload_len = len(buffer) - 4
+    if payload_len > available_payload_len:
+        raise ValidationError("packed buffer outer length exceeds the available payload")
+    if payload_len < available_payload_len:
+        raise ValidationError("packed buffer contains trailing data outside the outer frame")
+    payload = buffer[4:]
     fields: list[bytes] = []
     offset = 0
     for field_name in FIELD_NAMES:
-        if len(buffer) - offset < 4:
+        if len(payload) - offset < 4:
             raise ValidationError(f"packed buffer is truncated before {field_name}")
-        field_len = struct.unpack_from("<I", buffer, offset)[0]
+        field_len = struct.unpack_from("<I", payload, offset)[0]
         offset += 4
-        if field_len > len(buffer) - offset:
+        if field_len > len(payload) - offset:
             raise ValidationError(f"packed buffer is truncated inside {field_name}")
-        fields.append(buffer[offset : offset + field_len])
+        fields.append(payload[offset : offset + field_len])
         offset += field_len
-    if offset != len(buffer):
+    if offset != len(payload):
         raise ValidationError("packed buffer contains trailing data")
     inputs = CertighostInputs(*fields)
     validate_inputs(inputs)
@@ -259,9 +274,8 @@ def unpack_bof_args(buffer: bytes) -> CertighostInputs:
 
 
 def pack_apollo_execute_coff_arguments(inputs: CertighostInputs) -> bytes:
-    """Return Apollo execute_coff v3's outer argument frame for the six fields."""
-    go_buffer = pack_bof_args(inputs)
-    return struct.pack("<I", len(go_buffer)) + go_buffer
+    """Return Apollo execute_coff v3's outer argument frame passed intact to go."""
+    return pack_bof_args(inputs)
 
 
 def _b64(value: bytes) -> str:
@@ -444,7 +458,16 @@ def parse_bof_output(output_text: str) -> ParsedOutput:
         if len(cert_blocks) != 1:
             errors.append("issued result is missing exactly one certificate block")
             return ParsedOutput("invalid", None, None, None, None, tuple(errors))
-        cert_text = "".join(cert_blocks[0].group("certificate").split())
+        cert_block = cert_blocks[0]
+        if cert_block.start() != header.end():
+            newline_block_start = header.end() + 1
+            if (
+                header.end() >= len(output_text)
+                or output_text[header.end()] != "\n"
+                or cert_block.start() != newline_block_start
+            ):
+                errors.append("issued result header is not immediately followed by its certificate block")
+        cert_text = "".join(cert_block.group("certificate").split())
         try:
             cert_der = base64.b64decode(cert_text, validate=True)
         except (binascii.Error, ValueError):

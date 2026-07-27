@@ -1,6 +1,6 @@
 #include "certighost_core.h"
 
-/* Apollo execute_coff v3 serializes BOF binary field lengths as little-endian u32 values. */
+/* Apollo execute_coff v3 passes a BeaconDataParse-compatible outer length frame. */
 static cg_u32 cg_read_u32_le(const cg_u8 *buf) {
     return (cg_u32)buf[0] |
            ((cg_u32)buf[1] << 8) |
@@ -176,6 +176,8 @@ cg_status cg_validate_input(const cg_input *input) {
 
 cg_status cg_parse_packed_args(const cg_u8 *buf, cg_u32 len, cg_input *out) {
     cg_slice fields[CG_PACKED_FIELD_COUNT];
+    const cg_u8 *payload;
+    cg_u32 payload_len;
     cg_u32 offset;
     cg_u32 i;
 
@@ -185,22 +187,30 @@ cg_status cg_parse_packed_args(const cg_u8 *buf, cg_u32 len, cg_input *out) {
     if (len < 4u) {
         return CG_ERR_PACK_HEADER;
     }
+    payload_len = cg_read_u32_le(buf);
+    if (payload_len > (len - 4u)) {
+        return CG_ERR_PACK_TRUNCATED;
+    }
+    if (payload_len < (len - 4u)) {
+        return CG_ERR_PACK_TRAILING;
+    }
+    payload = buf + 4u;
     offset = 0u;
     for (i = 0u; i < CG_PACKED_FIELD_COUNT; ++i) {
         cg_u32 field_len;
-        if ((len - offset) < 4u) {
+        if ((payload_len - offset) < 4u) {
             return CG_ERR_PACK_TRUNCATED;
         }
-        field_len = cg_read_u32_le(buf + offset);
+        field_len = cg_read_u32_le(payload + offset);
         offset += 4u;
-        if (field_len > (len - offset)) {
+        if (field_len > (payload_len - offset)) {
             return CG_ERR_PACK_TRUNCATED;
         }
-        fields[i].ptr = buf + offset;
+        fields[i].ptr = payload + offset;
         fields[i].len = field_len;
         offset += field_len;
     }
-    if (offset != len) {
+    if (offset != payload_len) {
         return CG_ERR_PACK_TRAILING;
     }
     out->csr = fields[0];
@@ -318,7 +328,7 @@ const char *cg_status_string(cg_status status) {
     switch (status) {
         case CG_OK: return "ok";
         case CG_ERR_NULL: return "null input";
-        case CG_ERR_PACK_HEADER: return "packed argument field header is missing";
+        case CG_ERR_PACK_HEADER: return "packed argument outer header is missing";
         case CG_ERR_PACK_TRUNCATED: return "packed arguments are truncated";
         case CG_ERR_PACK_TRAILING: return "packed arguments contain trailing data";
         case CG_ERR_CSR_EMPTY: return "CSR is empty";

@@ -40,9 +40,9 @@
         "base64"
       ],
       "go_buffer_encoding": "base64",
-      "go_buffer_b64": "BQAAADADAgEAFQAAAGNhMDEubGFiLmxvY2FsXExBQi1DQQcAAABNYWNoaW5lEQAAAGdob3N0MDEubGFiLmxvY2FsCwAAADEwLjEwLjEwLjQ0DgAAAGRjMDEubGFiLmxvY2Fs",
-      "go_buffer_sha256": "6d66eec418791ba3c3cd34b92cf39b225823afa79e84beecf98913406a2f4486",
-      "go_buffer_bytes": 99,
+      "go_buffer_b64": "YwAAAAUAAAAwAwIBABUAAABjYTAxLmxhYi5sb2NhbFxMQUItQ0EHAAAATWFjaGluZREAAABnaG9zdDAxLmxhYi5sb2NhbAsAAAAxMC4xMC4xMC40NA4AAABkYzAxLmxhYi5sb2NhbA==",
+      "go_buffer_sha256": "b9d9e840bb57bf25ca5fba1084392a813982886fdde6806b4d8f8d28e98555d0",
+      "go_buffer_bytes": 103,
       "apollo_execute_coff_frame_encoding": "hex",
       "apollo_execute_coff_frame_hex": "6300000005000000300302010015000000636130312e6c61622e6c6f63616c5c4c41422d4341070000004d616368696e651100000067686f737430312e6c61622e6c6f63616c0b00000031302e31302e31302e34340e000000646330312e6c61622e6c6f63616c",
       "apollo_execute_coff_frame_bytes": 103
@@ -96,7 +96,7 @@
       "output_id": "output-fixture-vulnerable-001",
       "sequence": 0,
       "channel": "stdout",
-      "text": "CERTIGHOST_RESULT disposition=3 request_id=41 cert_encoding=base64 cert_der_bytes=5 cert_base64_chars=8\n"
+      "text": "CERTIGHOST_RESULT disposition=3 request_id=41 cert_encoding=base64 cert_der_bytes=5 cert_base64_chars=8"
     },
     {
       "output_id": "output-fixture-vulnerable-002",

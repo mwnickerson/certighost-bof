@@ -14,7 +14,7 @@ The rogue SMB/LDAP callback services described in [the research notes](docs/rese
 
 ## Argument Schema
 
-The `go` entrypoint expects a standard Beacon `bof_pack` buffer with six binary fields. The portable parser and the Apollo `execute_coff` v3 adapter use little-endian field length prefixes:
+The `go` entrypoint expects the standard Beacon `bof_pack` frame: one little-endian `u32` payload length followed by six little-endian length-prefixed binary fields. Apollo `execute_coff` v3 passes that frame intact:
 
 ```sleep
 $args = bof_pack($bid, "bbbbbb",
@@ -37,7 +37,7 @@ Fields are ordered as follows:
 | `cdc` | Chase callback host/IP value | Required DNS/IP-like ASCII, at most 255 bytes |
 | `rmd` | Remote-domain/principal lookup DNS value | Required DNS/IP-like ASCII, at most 255 bytes |
 
-The portable parser validates the six standard Beacon `bof_pack` field length prefixes, exact field count, and trailing data before the BOF calls `BeaconDataParse`/`BeaconDataExtract`. The BOF constructs this exact attribute string in memory:
+The portable parser validates the canonical outer payload length, the six inner field length prefixes, exact field count, and trailing data before the BOF passes the intact frame to `BeaconDataParse`/`BeaconDataExtract`. The BOF constructs this exact attribute string in memory:
 
 ```text
 CertificateTemplate:<template>
@@ -53,13 +53,12 @@ The `SAN:dns=` line is omitted only when `san_dns` is empty.
 On issuance, the BOF emits a text header and a base64-framed DER certificate:
 
 ```text
-CERTIGHOST_RESULT disposition=3 request_id=<id> cert_encoding=base64 cert_der_bytes=<n> cert_base64_chars=<n>
-CERTIGHOST_CERT_BEGIN
+CERTIGHOST_RESULT disposition=3 request_id=<id> cert_encoding=base64 cert_der_bytes=<n> cert_base64_chars=<n>CERTIGHOST_CERT_BEGIN
 <base64 DER certificate>
 CERTIGHOST_CERT_END
 ```
 
-No output field is a filesystem path. For a denied, pending, or failed submission, the BOF emits the disposition, request ID when available, last status HRESULT when available, and a sanitized CA disposition message. Input validation failures occur before COM enrollment is attempted.
+Apollo aggregates the issued `BeaconPrintf` header directly with the next `BeaconOutput` marker, so the canonical exported text has no newline between `cert_base64_chars=<n>` and `CERTIGHOST_CERT_BEGIN`. No output field is a filesystem path. For a denied, pending, or failed submission, the BOF emits the disposition, request ID when available, last status HRESULT when available, and a sanitized CA disposition message. Input validation failures occur before COM enrollment is attempted.
 
 ## Prerequisites
 

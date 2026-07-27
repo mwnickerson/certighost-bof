@@ -40,8 +40,9 @@ def sample_inputs():
 
 
 class PackingTests(unittest.TestCase):
-    def test_pack_bof_args_is_byte_exact_for_apollo_fields(self):
+    def test_pack_bof_args_is_byte_exact_for_canonical_apollo_frame(self):
         expected = bytes.fromhex(
+            "63000000"
             "050000003003020100"
             "15000000636130312e6c61622e6c6f63616c5c4c41422d4341"
             "070000004d616368696e65"
@@ -52,11 +53,11 @@ class PackingTests(unittest.TestCase):
         self.assertEqual(pack_bof_args(sample_inputs()), expected)
         self.assertEqual(unpack_bof_args(expected), sample_inputs())
 
-    def test_apollo_frame_prefixes_go_buffer_length(self):
+    def test_apollo_frame_is_the_intact_go_buffer(self):
         go_buffer = pack_bof_args(sample_inputs())
         apollo_frame = pack_apollo_execute_coff_arguments(sample_inputs())
-        self.assertEqual(apollo_frame[:4], len(go_buffer).to_bytes(4, "little"))
-        self.assertEqual(apollo_frame[4:], go_buffer)
+        self.assertEqual(apollo_frame, go_buffer)
+        self.assertEqual(apollo_frame[:4], (len(go_buffer) - 4).to_bytes(4, "little"))
 
     def test_unpack_rejects_trailing_data_and_invalid_inputs(self):
         with self.assertRaisesRegex(ValidationError, "trailing data"):
@@ -72,6 +73,17 @@ class PackingTests(unittest.TestCase):
                     rmd="dc01.lab.local",
                 )
             )
+
+    def test_unpack_rejects_outer_length_mismatch(self):
+        frame = bytearray(pack_bof_args(sample_inputs()))
+        frame[:4] = (len(frame) - 3).to_bytes(4, "little")
+        with self.assertRaisesRegex(ValidationError, "outer length"):
+            unpack_bof_args(bytes(frame))
+
+        frame = bytearray(pack_bof_args(sample_inputs()))
+        frame[:4] = (len(frame) - 5).to_bytes(4, "little")
+        with self.assertRaisesRegex(ValidationError, "outer frame"):
+            unpack_bof_args(bytes(frame))
 
 
 class TaskDescriptorTests(unittest.TestCase):
@@ -168,6 +180,44 @@ class OutputAndEvidenceTests(unittest.TestCase):
         self.assertEqual(parsed_patched.kind, "non_issued")
         self.assertEqual(parsed_patched.request_id, 42)
         self.assertEqual(parsed_patched.last_status, "80094800")
+
+    def test_output_parser_accepts_apollo_newline_free_issued_aggregation(self):
+        parsed = parse_bof_output(
+            "CERTIGHOST_RESULT disposition=3 request_id=41 cert_encoding=base64 "
+            "cert_der_bytes=5 cert_base64_chars=8"
+            "CERTIGHOST_CERT_BEGIN\nMAMCAQE=\nCERTIGHOST_CERT_END\n"
+        )
+        self.assertEqual(parsed.kind, "issued")
+        self.assertEqual(parsed.request_id, 41)
+        self.assertEqual(parsed.certificate_der, bytes.fromhex("3003020101"))
+
+    def test_output_parser_rejects_mixed_markers_with_apollo_aggregation(self):
+        parsed = parse_bof_output(
+            "CERTIGHOST_RESULT disposition=3 request_id=41 cert_encoding=base64 "
+            "cert_der_bytes=5 cert_base64_chars=8"
+            "CERTIGHOST_CERT_BEGIN\nMAMCAQE=\nCERTIGHOST_CERT_END\n"
+            "certighost: request not issued (disposition=2 request_id=42)\n"
+        )
+        self.assertEqual(parsed.kind, "invalid")
+        self.assertIn("mixed", " ".join(parsed.errors))
+
+    def test_output_parser_rejects_detached_or_reordered_certificate_blocks(self):
+        detached = parse_bof_output(
+            "CERTIGHOST_RESULT disposition=3 request_id=41 cert_encoding=base64 "
+            "cert_der_bytes=5 cert_base64_chars=8\n"
+            "unrelated output\n"
+            "CERTIGHOST_CERT_BEGIN\nMAMCAQE=\nCERTIGHOST_CERT_END\n"
+        )
+        self.assertEqual(detached.kind, "invalid")
+        self.assertIn("immediately followed", " ".join(detached.errors))
+
+        reordered = parse_bof_output(
+            "CERTIGHOST_CERT_BEGIN\nMAMCAQE=\nCERTIGHOST_CERT_END\n"
+            "CERTIGHOST_RESULT disposition=3 request_id=41 cert_encoding=base64 "
+            "cert_der_bytes=5 cert_base64_chars=8"
+        )
+        self.assertEqual(reordered.kind, "invalid")
+        self.assertIn("immediately followed", " ".join(reordered.errors))
 
     def test_output_parser_rejects_mismatched_certificate_lengths(self):
         parsed = parse_bof_output(
