@@ -32,6 +32,11 @@ static cg_u32 append_field(cg_u8 *buf, cg_u32 offset, const cg_u8 *value, cg_u32
     return offset;
 }
 
+static cg_u32 append_typed_binary_field(cg_u8 *buf, cg_u32 offset, const cg_u8 *value, cg_u32 len) {
+    write_u32_le(buf + offset, 0u);
+    return append_field(buf, offset + 4u, value, len);
+}
+
 static cg_u32 build_pack(cg_u8 *buf, const cg_u8 *csr, cg_u32 csr_len, const cg_u8 *template_name, cg_u32 template_len, const cg_u8 *san, cg_u32 san_len) {
     static const cg_u8 ca_config[] = "ca01.lab.local\\LAB-CA";
     static const cg_u8 cdc[] = "10.10.10.44";
@@ -52,6 +57,23 @@ static cg_u32 build_valid_pack(cg_u8 *buf, const cg_u8 *template_name, cg_u32 te
     static const cg_u8 csr[] = {0x30u, 0x03u, 0x02u, 0x01u, 0x00u};
 
     return build_pack(buf, csr, (cg_u32)sizeof(csr), template_name, template_len, san, san_len);
+}
+
+static cg_u32 build_valid_apollo_pack(cg_u8 *buf) {
+    static const cg_u8 csr[] = {0x30u, 0x03u, 0x02u, 0x01u, 0x00u};
+    static const cg_u8 ca_config[] = "ca01.lab.local\\LAB-CA";
+    static const cg_u8 template_name[] = "Machine";
+    static const cg_u8 san[] = "ghost01.lab.local";
+    static const cg_u8 cdc[] = "10.10.10.44";
+    static const cg_u8 rmd[] = "dc01.lab.local";
+    cg_u32 offset = 0u;
+
+    offset = append_typed_binary_field(buf, offset, csr, (cg_u32)sizeof(csr));
+    offset = append_typed_binary_field(buf, offset, ca_config, (cg_u32)sizeof(ca_config) - 1u);
+    offset = append_typed_binary_field(buf, offset, template_name, (cg_u32)sizeof(template_name) - 1u);
+    offset = append_typed_binary_field(buf, offset, san, (cg_u32)sizeof(san) - 1u);
+    offset = append_typed_binary_field(buf, offset, cdc, (cg_u32)sizeof(cdc) - 1u);
+    return append_typed_binary_field(buf, offset, rmd, (cg_u32)sizeof(rmd) - 1u);
 }
 
 static cg_u32 field_header_offset(const cg_u8 *buf, cg_u32 field_index) {
@@ -109,6 +131,14 @@ static void test_valid_construction(void) {
     } else if (status == CG_OK) {
         printf("PASS valid attribute bytes\n");
     }
+}
+
+static void test_valid_apollo_pack(void) {
+    cg_u8 packed[TEST_BUF_CAP];
+    cg_u32 packed_len = build_valid_apollo_pack(packed);
+    cg_input input;
+
+    expect_status("Apollo typed binary arguments", cg_parse_packed_args(packed, packed_len, &input), CG_OK);
 }
 
 static void test_optional_san(void) {
@@ -270,6 +300,7 @@ static void test_base64(void) {
 
 int main(void) {
     test_valid_construction();
+    test_valid_apollo_pack();
     test_optional_san();
     test_empty_csr();
     test_overlong_template();

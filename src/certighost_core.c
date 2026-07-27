@@ -1,18 +1,22 @@
 #include "certighost_core.h"
 
+#ifndef CG_CORE_LOCAL
+#define CG_CORE_LOCAL static
+#endif
+
 /* Apollo execute_coff v3 passes a BeaconDataParse-compatible outer length frame. */
-static cg_u32 cg_read_u32_le(const cg_u8 *buf) {
+CG_CORE_LOCAL cg_u32 cg_read_u32_le(const cg_u8 *buf) {
     return (cg_u32)buf[0] |
            ((cg_u32)buf[1] << 8) |
            ((cg_u32)buf[2] << 16) |
            ((cg_u32)buf[3] << 24);
 }
 
-static int cg_is_visible_ascii(cg_u8 c) {
+CG_CORE_LOCAL int cg_is_visible_ascii(cg_u8 c) {
     return c >= 0x20u && c <= 0x7eu;
 }
 
-static int cg_is_dns_value_char(cg_u8 c) {
+CG_CORE_LOCAL int cg_is_dns_value_char(cg_u8 c) {
     if (c >= (cg_u8)'a' && c <= (cg_u8)'z') {
         return 1;
     }
@@ -25,7 +29,7 @@ static int cg_is_dns_value_char(cg_u8 c) {
     return c == (cg_u8)'.' || c == (cg_u8)'-' || c == (cg_u8)'_';
 }
 
-static cg_status cg_validate_der_sequence(const cg_slice *csr) {
+CG_CORE_LOCAL cg_status cg_validate_der_sequence(const cg_slice *csr) {
     cg_u32 header_len;
     cg_u32 content_len;
     cg_u32 octets;
@@ -66,7 +70,7 @@ static cg_status cg_validate_der_sequence(const cg_slice *csr) {
     return CG_OK;
 }
 
-static cg_status cg_validate_ca_config(const cg_slice *value) {
+CG_CORE_LOCAL cg_status cg_validate_ca_config(const cg_slice *value) {
     cg_u32 i;
     cg_u32 slash_count = 0u;
     cg_u32 slash_pos = 0u;
@@ -93,7 +97,7 @@ static cg_status cg_validate_ca_config(const cg_slice *value) {
     return CG_OK;
 }
 
-static cg_status cg_validate_template(const cg_slice *value) {
+CG_CORE_LOCAL cg_status cg_validate_template(const cg_slice *value) {
     cg_u32 i;
 
     if (value->len == 0u) {
@@ -111,7 +115,7 @@ static cg_status cg_validate_template(const cg_slice *value) {
     return CG_OK;
 }
 
-static cg_status cg_validate_dns_value(const cg_slice *value, int optional, cg_status empty_error, cg_status too_long_error, cg_status invalid_error) {
+CG_CORE_LOCAL cg_status cg_validate_dns_value(const cg_slice *value, int optional, cg_status empty_error, cg_status too_long_error, cg_status invalid_error) {
     cg_u32 i;
 
     if (value->len == 0u) {
@@ -128,7 +132,7 @@ static cg_status cg_validate_dns_value(const cg_slice *value, int optional, cg_s
     return CG_OK;
 }
 
-static cg_status cg_append_bytes(char *out, cg_u32 out_cap, cg_u32 *offset, const cg_u8 *value, cg_u32 value_len) {
+CG_CORE_LOCAL cg_status cg_append_bytes(char *out, cg_u32 out_cap, cg_u32 *offset, const cg_u8 *value, cg_u32 value_len) {
     cg_u32 i;
 
     if (*offset > out_cap || value_len > (out_cap - *offset)) {
@@ -141,11 +145,11 @@ static cg_status cg_append_bytes(char *out, cg_u32 out_cap, cg_u32 *offset, cons
     return CG_OK;
 }
 
-static cg_status cg_append_literal(char *out, cg_u32 out_cap, cg_u32 *offset, const char *literal, cg_u32 literal_len) {
+CG_CORE_LOCAL cg_status cg_append_literal(char *out, cg_u32 out_cap, cg_u32 *offset, const char *literal, cg_u32 literal_len) {
     return cg_append_bytes(out, out_cap, offset, (const cg_u8 *)literal, literal_len);
 }
 
-cg_status cg_validate_input(const cg_input *input) {
+CG_CORE_API cg_status cg_validate_input(const cg_input *input) {
     cg_status status;
 
     if (input == (const cg_input *)0) {
@@ -174,12 +178,13 @@ cg_status cg_validate_input(const cg_input *input) {
     return cg_validate_dns_value(&input->rmd, 0, CG_ERR_RMD_EMPTY, CG_ERR_RMD_TOO_LONG, CG_ERR_RMD_INVALID);
 }
 
-cg_status cg_parse_packed_args(const cg_u8 *buf, cg_u32 len, cg_input *out) {
+CG_CORE_API cg_status cg_parse_packed_args(const cg_u8 *buf, cg_u32 len, cg_input *out) {
     cg_slice fields[CG_PACKED_FIELD_COUNT];
     const cg_u8 *payload;
     cg_u32 payload_len;
     cg_u32 offset;
     cg_u32 i;
+    int typed_fields = 0;
 
     if (buf == (const cg_u8 *)0 || out == (cg_input *)0) {
         return CG_ERR_NULL;
@@ -187,17 +192,32 @@ cg_status cg_parse_packed_args(const cg_u8 *buf, cg_u32 len, cg_input *out) {
     if (len < 4u) {
         return CG_ERR_PACK_HEADER;
     }
-    payload_len = cg_read_u32_le(buf);
-    if (payload_len > (len - 4u)) {
-        return CG_ERR_PACK_TRUNCATED;
+    if (cg_read_u32_le(buf) == 0u) {
+        payload = buf;
+        payload_len = len;
+        typed_fields = 1;
+    } else {
+        payload_len = cg_read_u32_le(buf);
+        if (payload_len > (len - 4u)) {
+            return CG_ERR_PACK_TRUNCATED;
+        }
+        if (payload_len < (len - 4u)) {
+            return CG_ERR_PACK_TRAILING;
+        }
+        payload = buf + 4u;
     }
-    if (payload_len < (len - 4u)) {
-        return CG_ERR_PACK_TRAILING;
-    }
-    payload = buf + 4u;
     offset = 0u;
     for (i = 0u; i < CG_PACKED_FIELD_COUNT; ++i) {
         cg_u32 field_len;
+        if (typed_fields) {
+            if ((payload_len - offset) < 4u) {
+                return CG_ERR_PACK_TRUNCATED;
+            }
+            if (cg_read_u32_le(payload + offset) != 0u) {
+                return CG_ERR_PACK_HEADER;
+            }
+            offset += 4u;
+        }
         if ((payload_len - offset) < 4u) {
             return CG_ERR_PACK_TRUNCATED;
         }
@@ -222,7 +242,7 @@ cg_status cg_parse_packed_args(const cg_u8 *buf, cg_u32 len, cg_input *out) {
     return cg_validate_input(out);
 }
 
-cg_status cg_build_attributes(const cg_input *input, char *out, cg_u32 out_cap, cg_u32 *out_len) {
+CG_CORE_API cg_status cg_build_attributes(const cg_input *input, char *out, cg_u32 out_cap, cg_u32 *out_len) {
     cg_status status;
     cg_u32 offset = 0u;
 
@@ -275,15 +295,15 @@ cg_status cg_build_attributes(const cg_input *input, char *out, cg_u32 out_cap, 
     return CG_OK;
 }
 
-cg_u32 cg_base64_encoded_size(cg_u32 input_len) {
+CG_CORE_API cg_u32 cg_base64_encoded_size(cg_u32 input_len) {
     if (input_len > 0x3ffffffdu) {
         return 0u;
     }
     return ((input_len + 2u) / 3u) * 4u;
 }
 
-cg_status cg_base64_encode(const cg_u8 *input, cg_u32 input_len, char *out, cg_u32 out_cap, cg_u32 *out_len) {
-    static char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+CG_CORE_API cg_status cg_base64_encode(const cg_u8 *input, cg_u32 input_len, char *out, cg_u32 out_cap, cg_u32 *out_len) {
+    const char *alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     cg_u32 required;
     cg_u32 i = 0u;
     cg_u32 o = 0u;
@@ -324,7 +344,7 @@ cg_status cg_base64_encode(const cg_u8 *input, cg_u32 input_len, char *out, cg_u
     return CG_OK;
 }
 
-const char *cg_status_string(cg_status status) {
+CG_CORE_API const char *cg_status_string(cg_status status) {
     switch (status) {
         case CG_OK: return "ok";
         case CG_ERR_NULL: return "null input";
@@ -355,7 +375,7 @@ const char *cg_status_string(cg_status status) {
     }
 }
 
-void cg_secure_zero(void *buf, cg_u32 len) {
+CG_CORE_API void cg_secure_zero(void *buf, cg_u32 len) {
     volatile cg_u8 *cursor = (volatile cg_u8 *)buf;
     cg_u32 i;
 

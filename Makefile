@@ -6,7 +6,7 @@ BOF_CC_MINGW := $(shell command -v x86_64-w64-mingw32-gcc 2>/dev/null)
 BOF_CC_CLANG := $(shell command -v /opt/homebrew/opt/llvm@21/bin/clang 2>/dev/null || command -v clang 2>/dev/null)
 BOF_CC ?= $(if $(BOF_CC_MINGW),$(BOF_CC_MINGW),$(BOF_CC_CLANG))
 BOF_TARGET_FLAG := $(if $(BOF_CC_MINGW),,--target=x86_64-w64-windows-gnu)
-BOF_CFLAGS ?= $(BOF_TARGET_FLAG) -std=c11 -Wall -Wextra -Werror -Iinclude -Isrc -c -fno-builtin -fno-stack-protector -fno-asynchronous-unwind-tables -fno-unwind-tables -fno-jump-tables -fwritable-strings
+BOF_CFLAGS ?= $(BOF_TARGET_FLAG) -O2 -std=c11 -Wall -Wextra -Werror -Iinclude -Isrc -c -fno-builtin -fno-stack-protector -fno-asynchronous-unwind-tables -fno-unwind-tables -fno-jump-tables -fwritable-strings
 
 LLVM_NM ?= $(shell command -v /opt/homebrew/opt/llvm@21/bin/llvm-nm 2>/dev/null || command -v llvm-nm 2>/dev/null)
 LLVM_OBJDUMP ?= $(shell command -v /opt/homebrew/opt/llvm@21/bin/llvm-objdump 2>/dev/null || command -v llvm-objdump 2>/dev/null)

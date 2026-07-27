@@ -5,6 +5,10 @@ typedef unsigned char cg_u8;
 typedef unsigned short cg_u16;
 typedef unsigned int cg_u32;
 
+#ifndef CG_CORE_API
+#define CG_CORE_API
+#endif
+
 #define CG_PACKED_FIELD_COUNT 6u
 #define CG_MAX_CSR_LEN 262144u
 #define CG_MAX_CA_CONFIG_LEN 512u
@@ -55,12 +59,12 @@ typedef enum {
     CG_ERR_BASE64_INPUT_TOO_LONG
 } cg_status;
 
-cg_status cg_parse_packed_args(const cg_u8 *buf, cg_u32 len, cg_input *out);
-cg_status cg_validate_input(const cg_input *input);
-cg_status cg_build_attributes(const cg_input *input, char *out, cg_u32 out_cap, cg_u32 *out_len);
-cg_status cg_base64_encode(const cg_u8 *input, cg_u32 input_len, char *out, cg_u32 out_cap, cg_u32 *out_len);
-cg_u32 cg_base64_encoded_size(cg_u32 input_len);
-const char *cg_status_string(cg_status status);
-void cg_secure_zero(void *buf, cg_u32 len);
+CG_CORE_API cg_status cg_parse_packed_args(const cg_u8 *buf, cg_u32 len, cg_input *out);
+CG_CORE_API cg_status cg_validate_input(const cg_input *input);
+CG_CORE_API cg_status cg_build_attributes(const cg_input *input, char *out, cg_u32 out_cap, cg_u32 *out_len);
+CG_CORE_API cg_status cg_base64_encode(const cg_u8 *input, cg_u32 input_len, char *out, cg_u32 out_cap, cg_u32 *out_len);
+CG_CORE_API cg_u32 cg_base64_encoded_size(cg_u32 input_len);
+CG_CORE_API const char *cg_status_string(cg_status status);
+CG_CORE_API void cg_secure_zero(void *buf, cg_u32 len);
 
 #endif
