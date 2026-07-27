@@ -9,3 +9,9 @@ No push or publication is authorized.
 ## Research
 
 - [CVE-2026-54121 / Certighost primary-source research](docs/research/CVE-2026-54121.md)
+
+## Lab Design
+
+- [REDANTONETTA declarative lab runbook](docs/lab/CVE-2026-54121-redantonetta-runbook.md)
+- [Ludus range config](ludus/ranges/redantonetta-certighost.yml)
+- [Local Certighost lab role](ludus/roles/certighost_lab)

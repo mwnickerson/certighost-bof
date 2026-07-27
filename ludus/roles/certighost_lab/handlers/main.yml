@@ -1,0 +1,5 @@
+---
+- name: Restart certificate services after chase policy change
+  ansible.windows.win_service:
+    name: CertSvc
+    state: restarted

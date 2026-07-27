@@ -1,0 +1,16 @@
+---
+- name: Validate selected Certighost lab component
+  ansible.builtin.assert:
+    that:
+      - certighost_lab_component in certighost_lab_supported_components
+    fail_msg: >-
+      certighost_lab_component must be one of
+      {{ certighost_lab_supported_components | join(', ') }}.
+
+- name: Run directory bootstrap tasks
+  ansible.builtin.include_tasks: directory_bootstrap.yml
+  when: certighost_lab_component == "directory_bootstrap"
+
+- name: Run Enterprise CA tasks
+  ansible.builtin.include_tasks: enterprise_ca.yml
+  when: certighost_lab_component == "enterprise_ca"

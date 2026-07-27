@@ -1,0 +1,156 @@
+# yaml-language-server: $schema=https://docs.ludus.cloud/schemas/range-config.json
+---
+# All passwords in this file are disposable lab fixtures. They are not production credentials.
+ludus:
+  - vm_name: "{{ range_id }}-certighost-dc01"
+    hostname: RA-DC01
+    template: win2022-server-x64-template
+    vlan: 10
+    ip_last_octet: 10
+    ram_gb: 6
+    cpus: 4
+    windows:
+      sysprep: true
+    domain:
+      fqdn: certighost.redantonetta.test
+      role: primary-dc
+    roles:
+      - certighost_lab
+    role_vars:
+      certighost_lab_component: directory_bootstrap
+    ansible_groups:
+      - certighost_dc
+    testing:
+      snapshot: true
+      block_internet: true
+
+  - vm_name: "{{ range_id }}-certighost-ca01"
+    hostname: RA-CA01
+    template: win2022-server-x64-template
+    vlan: 10
+    ip_last_octet: 20
+    ram_gb: 6
+    cpus: 4
+    windows:
+      sysprep: true
+    domain:
+      fqdn: certighost.redantonetta.test
+      role: member
+    roles:
+      - name: certighost_lab
+        depends_on:
+          - vm_name: "{{ range_id }}-certighost-dc01"
+            role: certighost_lab
+    role_vars:
+      certighost_lab_component: enterprise_ca
+      certighost_lab_enable_chase_client_dc: true
+    ansible_groups:
+      - certighost_ca
+    testing:
+      snapshot: true
+      block_internet: true
+
+  - vm_name: "{{ range_id }}-certighost-attacker"
+    hostname: ra-kali
+    template: kali-x64-desktop-template
+    vlan: 30
+    ip_last_octet: 30
+    ram_gb: 4
+    cpus: 2
+    linux: true
+    ansible_groups:
+      - certighost_attacker
+    testing:
+      snapshot: true
+      block_internet: true
+
+network:
+  inter_vlan_default: REJECT
+  external_default: REJECT
+  wireguard_vlan_default: REJECT
+  rules:
+    - name: CA callback to attacker SMB only
+      vlan_src: 10
+      ip_last_octet_src: 20
+      vlan_dst: 30
+      ip_last_octet_dst: 30
+      protocol: tcp
+      ports: 445
+      action: ACCEPT
+    - name: CA callback to attacker LDAP only
+      vlan_src: 10
+      ip_last_octet_src: 20
+      vlan_dst: 30
+      ip_last_octet_dst: 30
+      protocol: tcp
+      ports: 389
+      action: ACCEPT
+    - name: Attacker DNS TCP to DC
+      vlan_src: 30
+      ip_last_octet_src: 30
+      vlan_dst: 10
+      ip_last_octet_dst: 10
+      protocol: tcp
+      ports: 53
+      action: ACCEPT
+    - name: Attacker DNS UDP to DC
+      vlan_src: 30
+      ip_last_octet_src: 30
+      vlan_dst: 10
+      ip_last_octet_dst: 10
+      protocol: udp
+      ports: 53
+      action: ACCEPT
+    - name: Attacker Kerberos TCP to DC
+      vlan_src: 30
+      ip_last_octet_src: 30
+      vlan_dst: 10
+      ip_last_octet_dst: 10
+      protocol: tcp
+      ports: 88
+      action: ACCEPT
+    - name: Attacker LDAP to DC
+      vlan_src: 30
+      ip_last_octet_src: 30
+      vlan_dst: 10
+      ip_last_octet_dst: 10
+      protocol: tcp
+      ports: 389
+      action: ACCEPT
+    - name: Attacker LDAPS to DC
+      vlan_src: 30
+      ip_last_octet_src: 30
+      vlan_dst: 10
+      ip_last_octet_dst: 10
+      protocol: tcp
+      ports: 636
+      action: ACCEPT
+    - name: Attacker Netlogon named pipe to DC
+      vlan_src: 30
+      ip_last_octet_src: 30
+      vlan_dst: 10
+      ip_last_octet_dst: 10
+      protocol: tcp
+      ports: 445
+      action: ACCEPT
+    - name: Attacker ICPR named pipe to CA
+      vlan_src: 30
+      ip_last_octet_src: 30
+      vlan_dst: 10
+      ip_last_octet_dst: 20
+      protocol: tcp
+      ports: 445
+      action: ACCEPT
+
+defaults:
+  snapshot_with_RAM: true
+  stale_hours: 0
+  ad_domain_functional_level: WinThreshold
+  ad_forest_functional_level: WinThreshold
+  ad_domain_admin: labda
+  ad_domain_admin_password: "LAB-ONLY-NOT-PROD-DomainAdmin!2026"
+  ad_domain_user: ludususer
+  ad_domain_user_password: "LAB-ONLY-NOT-PROD-DomainUser!2026"
+  ad_domain_safe_mode_password: "LAB-ONLY-NOT-PROD-DSRM!2026"
+  timezone: America/New_York
+  enable_dynamic_wallpaper: false
