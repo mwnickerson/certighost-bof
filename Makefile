@@ -1,5 +1,6 @@
 HOST_CC ?= clang
 HOST_CFLAGS ?= -std=c11 -Wall -Wextra -Werror -pedantic -Iinclude
+PYTHON ?= python3
 
 BOF_CC_MINGW := $(shell command -v x86_64-w64-mingw32-gcc 2>/dev/null)
 BOF_CC_CLANG := $(shell command -v /opt/homebrew/opt/llvm@21/bin/clang 2>/dev/null || command -v clang 2>/dev/null)
@@ -27,6 +28,7 @@ $(HOST_TEST): src/certighost_core.c include/certighost_core.h tests/test_core.c 
 
 test: $(HOST_TEST)
 	$(HOST_TEST)
+	PYTHONPYCACHEPREFIX=$(BUILD_DIR)/pycache $(PYTHON) -m unittest discover -s tests -p 'test_*.py'
 
 $(BOF_OBJ): src/certighost_bof.c src/certighost_core.c include/certighost_core.h include/certighost_win.h include/beacon.h | $(BUILD_DIR)
 	@if [ -z "$(BOF_CC)" ]; then echo "no x86_64-w64-mingw32-gcc or clang available for x64 COFF build" >&2; exit 1; fi

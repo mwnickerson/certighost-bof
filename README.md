@@ -14,7 +14,7 @@ The rogue SMB/LDAP callback services described in [the research notes](docs/rese
 
 ## Argument Schema
 
-The `go` entrypoint expects a standard Beacon `bof_pack` buffer with six binary fields:
+The `go` entrypoint expects a standard Beacon `bof_pack` buffer with six binary fields. The portable parser and the Apollo `execute_coff` v3 adapter use little-endian field length prefixes:
 
 ```sleep
 $args = bof_pack($bid, "bbbbbb",
@@ -81,7 +81,7 @@ make imports
 git diff --check
 ```
 
-`make bof` prefers `x86_64-w64-mingw32-gcc` when present. In this worktree it falls back to the installed LLVM clang cross-target path and emits `build/certighost.x64.o` as `coff-x86-64`. `make test` builds and runs the macOS host harness for valid construction plus empty, overlong, malformed, injection, trailing, and truncated inputs.
+`make bof` prefers `x86_64-w64-mingw32-gcc` when present. In this worktree it falls back to the installed LLVM clang cross-target path and emits `build/certighost.x64.o` as `coff-x86-64`. `make test` builds and runs the macOS host harness plus the offline Mythic packing, task-schema, output, filesystem-evidence, repeatability, and cleanup tests.
 
 ## Recovery
 
@@ -90,3 +90,13 @@ If the CA returns a non-issued disposition, retain the reported request ID and C
 ## Research
 
 - [CVE-2026-54121 / Certighost primary-source research](docs/research/CVE-2026-54121.md)
+
+## Mythic Integration
+
+- [Offline Apollo execute_coff v3 workflow and evidence validation](docs/mythic-integration.md)
+
+## Lab Design
+
+- [REDANTONETTA declarative lab runbook](docs/lab/CVE-2026-54121-redantonetta-runbook.md)
+- [Ludus range config](ludus/ranges/redantonetta-certighost.yml)
+- [Local Certighost lab role](ludus/roles/certighost_lab)

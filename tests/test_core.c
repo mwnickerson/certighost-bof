@@ -7,22 +7,22 @@
 
 static int failures = 0;
 
-static void write_u32_be(cg_u8 *buf, cg_u32 value) {
-    buf[0] = (cg_u8)((value >> 24) & 0xffu);
-    buf[1] = (cg_u8)((value >> 16) & 0xffu);
-    buf[2] = (cg_u8)((value >> 8) & 0xffu);
-    buf[3] = (cg_u8)(value & 0xffu);
+static void write_u32_le(cg_u8 *buf, cg_u32 value) {
+    buf[0] = (cg_u8)(value & 0xffu);
+    buf[1] = (cg_u8)((value >> 8) & 0xffu);
+    buf[2] = (cg_u8)((value >> 16) & 0xffu);
+    buf[3] = (cg_u8)((value >> 24) & 0xffu);
 }
 
-static cg_u32 read_u32_be(const cg_u8 *buf) {
-    return ((cg_u32)buf[0] << 24) |
-           ((cg_u32)buf[1] << 16) |
-           ((cg_u32)buf[2] << 8) |
-           (cg_u32)buf[3];
+static cg_u32 read_u32_le(const cg_u8 *buf) {
+    return (cg_u32)buf[0] |
+           ((cg_u32)buf[1] << 8) |
+           ((cg_u32)buf[2] << 16) |
+           ((cg_u32)buf[3] << 24);
 }
 
 static cg_u32 append_field(cg_u8 *buf, cg_u32 offset, const cg_u8 *value, cg_u32 len) {
-    write_u32_be(buf + offset, len);
+    write_u32_le(buf + offset, len);
     offset += 4u;
     if (len != 0u) {
         memcpy(buf + offset, value, len);
@@ -57,7 +57,7 @@ static cg_u32 field_header_offset(const cg_u8 *buf, cg_u32 field_index) {
     cg_u32 i;
 
     for (i = 0u; i < field_index; ++i) {
-        cg_u32 field_len = read_u32_be(buf + offset);
+        cg_u32 field_len = read_u32_le(buf + offset);
         offset += 4u + field_len;
     }
     return offset;
@@ -179,7 +179,7 @@ static void test_inner_truncated_pack(void) {
     cg_u32 rmd_header = field_header_offset(packed, 5u);
     cg_input input;
 
-    write_u32_be(packed + rmd_header, 0xffffffffu);
+    write_u32_le(packed + rmd_header, 0xffffffffu);
     expect_status("inner field length rejected", cg_parse_packed_args(packed, packed_len, &input), CG_ERR_PACK_TRUNCATED);
 
     packed_len = build_valid_pack(packed, template_name, (cg_u32)sizeof(template_name) - 1u, san, (cg_u32)sizeof(san) - 1u);

@@ -1,10 +1,11 @@
 #include "certighost_core.h"
 
-static cg_u32 cg_read_u32_be(const cg_u8 *buf) {
-    return ((cg_u32)buf[0] << 24) |
-           ((cg_u32)buf[1] << 16) |
-           ((cg_u32)buf[2] << 8) |
-           (cg_u32)buf[3];
+/* Apollo execute_coff v3 serializes BOF binary field lengths as little-endian u32 values. */
+static cg_u32 cg_read_u32_le(const cg_u8 *buf) {
+    return (cg_u32)buf[0] |
+           ((cg_u32)buf[1] << 8) |
+           ((cg_u32)buf[2] << 16) |
+           ((cg_u32)buf[3] << 24);
 }
 
 static int cg_is_visible_ascii(cg_u8 c) {
@@ -190,7 +191,7 @@ cg_status cg_parse_packed_args(const cg_u8 *buf, cg_u32 len, cg_input *out) {
         if ((len - offset) < 4u) {
             return CG_ERR_PACK_TRUNCATED;
         }
-        field_len = cg_read_u32_be(buf + offset);
+        field_len = cg_read_u32_le(buf + offset);
         offset += 4u;
         if (field_len > (len - offset)) {
             return CG_ERR_PACK_TRUNCATED;
