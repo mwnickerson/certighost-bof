@@ -1,5 +1,7 @@
 # Certighost BOF
 
+> **Disclosure:** This project was developed entirely by AI using the Hermes harness.
+
 Certighost is a Windows x64 Beacon Object File plus an offline operator CLI for the enrollment-only portion of the Certighost / CVE-2026-54121 lab chain. The BOF submits a caller-supplied in-memory PKCS#10 request through `ICertRequest::Submit` with `CR_IN_BINARY | CR_IN_PKCS10 | CR_IN_RPC`, then returns the disposition, request ID, and issued certificate bytes as base64 text over Beacon output.
 
 This is REDANTONETTA lab-only work. No push, publication, deployment, live target execution, Mythic API tasking, listener automation, or broad DRS dumping is authorized from this repository.
