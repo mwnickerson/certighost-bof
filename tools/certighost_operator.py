@@ -4,14 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import hashlib
 import hmac
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -209,7 +212,13 @@ def _find_openssl() -> str:
     return openssl
 
 
-def _run_openssl(openssl: str, args: Sequence[str], *, input_bytes: bytes | None = None) -> bytes:
+def _run_openssl(
+    openssl: str,
+    args: Sequence[str],
+    *,
+    input_bytes: bytes | None = None,
+    sensitive_input: bool = False,
+) -> bytes:
     try:
         completed = subprocess.run(
             [openssl, *args],
@@ -219,10 +228,15 @@ def _run_openssl(openssl: str, args: Sequence[str], *, input_bytes: bytes | None
             check=False,
         )
     except OSError as exc:
+        if sensitive_input:
+            raise OperatorError("unable to execute openssl") from exc
         raise OperatorError(f"unable to execute openssl: {exc}") from exc
     if completed.returncode != 0:
-        stderr = completed.stderr.decode("utf-8", "replace").strip()
-        detail = stderr.splitlines()[-1] if stderr else f"exit status {completed.returncode}"
+        if sensitive_input:
+            detail = f"exit status {completed.returncode}"
+        else:
+            stderr = completed.stderr.decode("utf-8", "replace").strip()
+            detail = stderr.splitlines()[-1] if stderr else f"exit status {completed.returncode}"
         raise OperatorError(f"openssl {' '.join(args[:2])} failed: {detail}")
     return completed.stdout
 
@@ -318,6 +332,79 @@ def _remove_regular_file(path: Path) -> None:
         raise OperatorError(f"unable to remove {path}: {exc}") from exc
 
 
+def _normalize_pfx_password(raw: bytes, source_label: str) -> bytes:
+    if raw.endswith(b"\r\n"):
+        raw = raw[:-2]
+    elif raw.endswith(b"\n"):
+        raw = raw[:-1]
+    if not raw:
+        raise OperatorError("PFX password must not be empty")
+    if b"\r" in raw or b"\n" in raw:
+        raise OperatorError(f"{source_label} must contain exactly one password line")
+    if b"\x00" in raw:
+        raise OperatorError("PFX password must not contain NUL bytes")
+    return raw
+
+
+def _read_pfx_password_file(value: str) -> bytes:
+    password_path = _absolute_path(value)
+    _assert_regular_file(password_path, "PFX password file")
+    try:
+        mode = stat.S_IMODE(password_path.stat().st_mode)
+    except OSError as exc:
+        raise OperatorError(f"unable to inspect PFX password file: {password_path}: {exc}") from exc
+    if mode & 0o077:
+        raise OperatorError("PFX password file must not be accessible by group or others")
+    return _normalize_pfx_password(_read_regular_bytes(password_path, "PFX password file"), "PFX password file")
+
+
+def _read_pfx_password_stdin() -> bytes:
+    stream = getattr(sys.stdin, "buffer", sys.stdin)
+    if hasattr(stream, "isatty") and stream.isatty():
+        raise OperatorError("--pfx-password-stdin requires redirected stdin; use --pfx for a hidden prompt")
+    try:
+        raw = stream.readline()
+    except OSError as exc:
+        raise OperatorError(f"unable to read PFX password from stdin: {exc}") from exc
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8")
+    return _normalize_pfx_password(raw, "PFX password stdin")
+
+
+def _getpass_hidden(prompt: str) -> str:
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", getpass.GetPassWarning)
+            return getpass.getpass(prompt)
+    except getpass.GetPassWarning as exc:
+        raise OperatorError(
+            "hidden PFX password prompt is unavailable; use --pfx-password-file or --pfx-password-stdin"
+        ) from exc
+    except (EOFError, KeyboardInterrupt) as exc:
+        raise OperatorError("PFX password is required") from exc
+
+
+def _prompt_pfx_password() -> bytes:
+    password = _normalize_pfx_password(_getpass_hidden("PFX password: ").encode("utf-8"), "PFX password")
+    confirmation = _normalize_pfx_password(
+        _getpass_hidden("Confirm PFX password: ").encode("utf-8"),
+        "PFX password confirmation",
+    )
+    if not hmac.compare_digest(password, confirmation):
+        raise OperatorError("PFX password confirmation does not match")
+    return password
+
+
+def _resolve_pfx_password(args: argparse.Namespace) -> bytes | None:
+    if args.pfx_password_file is not None:
+        return _read_pfx_password_file(args.pfx_password_file)
+    if args.pfx_password_stdin:
+        return _read_pfx_password_stdin()
+    if args.pfx:
+        return _prompt_pfx_password()
+    return None
+
+
 def _prepare(args: argparse.Namespace) -> int:
     callback_id = _prompt_required(args.callback_id, "Callback ID")
     ca_config = _prompt_required(args.ca_config, "CA config (host\\CAName)")
@@ -372,9 +459,18 @@ def _prepare(args: argparse.Namespace) -> int:
 
 def _extract(args: argparse.Namespace) -> int:
     run_dir = _require_marked_run_dir(args.run_dir)
+    cert_der_path = run_dir / CERT_DER_NAME
+    cert_pem_path = run_dir / CERT_PEM_NAME
+    pfx_path = run_dir / PFX_NAME
+    cert_der_tmp_path = run_dir / CERT_DER_TMP_NAME
+    cert_pem_tmp_path = run_dir / CERT_PEM_TMP_NAME
+    pfx_tmp_path = run_dir / PFX_TMP_NAME
+    for path in (cert_der_path, cert_pem_path, pfx_path, cert_der_tmp_path, cert_pem_tmp_path, pfx_tmp_path):
+        _assert_regular_or_missing(path, path.name)
+    if _lexists(cert_der_path) or _lexists(cert_pem_path) or _lexists(pfx_path):
+        raise OperatorError("certificate artifacts already exist in the run directory; use a fresh run directory")
+
     openssl = _find_openssl()
-    if args.pfx_password == "":
-        raise OperatorError("PFX password must not be empty")
     key_path = run_dir / KEY_NAME
     _assert_regular_file(key_path, "private key")
 
@@ -395,17 +491,6 @@ def _extract(args: argparse.Namespace) -> int:
         detail = "; ".join(parsed.errors) if parsed.errors else "issued certificate result was not found"
         raise OperatorError(f"captured Mythic output is not a valid issued result: {detail}")
 
-    cert_der_path = run_dir / CERT_DER_NAME
-    cert_pem_path = run_dir / CERT_PEM_NAME
-    pfx_path = run_dir / PFX_NAME
-    cert_der_tmp_path = run_dir / CERT_DER_TMP_NAME
-    cert_pem_tmp_path = run_dir / CERT_PEM_TMP_NAME
-    pfx_tmp_path = run_dir / PFX_TMP_NAME
-    for path in (cert_der_path, cert_pem_path, pfx_path, cert_der_tmp_path, cert_pem_tmp_path, pfx_tmp_path):
-        _assert_regular_or_missing(path, path.name)
-    if _lexists(cert_der_path) or _lexists(cert_pem_path) or _lexists(pfx_path):
-        raise OperatorError("certificate artifacts already exist in the run directory; use a fresh run directory")
-
     try:
         _write_bytes_secure(cert_der_tmp_path, parsed.certificate_der)
         _run_openssl(
@@ -418,9 +503,8 @@ def _extract(args: argparse.Namespace) -> int:
         cert_digest = _spki_digest_from_certificate(openssl, cert_pem_tmp_path)
         if not hmac.compare_digest(key_digest, cert_digest):
             raise OperatorError("issued certificate public key does not match the run private key")
-        _replace_regular_file(cert_der_tmp_path, cert_der_path)
-        _replace_regular_file(cert_pem_tmp_path, cert_pem_path)
-        if args.pfx_password is not None:
+        pfx_password = _resolve_pfx_password(args)
+        if pfx_password is not None:
             _run_openssl(
                 openssl,
                 [
@@ -429,16 +513,20 @@ def _extract(args: argparse.Namespace) -> int:
                     "-inkey",
                     str(key_path),
                     "-in",
-                    str(cert_pem_path),
+                    str(cert_pem_tmp_path),
                     "-out",
                     str(pfx_tmp_path),
                     "-passout",
                     "stdin",
                 ],
-                input_bytes=(args.pfx_password + "\n").encode("utf-8"),
+                input_bytes=pfx_password + b"\n",
+                sensitive_input=True,
             )
             _assert_regular_file(pfx_tmp_path, pfx_tmp_path.name)
             os.chmod(pfx_tmp_path, 0o600)
+        _replace_regular_file(cert_der_tmp_path, cert_der_path)
+        _replace_regular_file(cert_pem_tmp_path, cert_pem_path)
+        if pfx_password is not None:
             _replace_regular_file(pfx_tmp_path, pfx_path)
     except Exception:
         for path in (cert_der_tmp_path, cert_pem_tmp_path, pfx_tmp_path):
@@ -452,7 +540,7 @@ def _extract(args: argparse.Namespace) -> int:
     print(f"SENSITIVE issued certificate DER: {cert_der_path}")
     print(f"SENSITIVE issued certificate PEM: {cert_pem_path}")
     print("VERIFIED certificate/private-key continuity: OpenSSL SHA-256 SPKI digests match")
-    if args.pfx_password is not None:
+    if pfx_password is not None:
         print(f"SECRET transient PFX (0600): {pfx_path}")
     print("NEXT: Use only the transient local certificate material for the authorized PKINIT proof, then run cleanup.")
     return 0
@@ -529,7 +617,22 @@ def build_parser() -> argparse.ArgumentParser:
     extract = subparsers.add_parser("extract", help="store Mythic output and verify an issued certificate locally")
     extract.add_argument("--run-dir", "--run-directory", dest="run_dir", required=True)
     extract.add_argument("--mythic-output", "--output-file", "--captured-output", dest="mythic_output", required=True)
-    extract.add_argument("--pfx-password")
+    pfx_password_source = extract.add_mutually_exclusive_group()
+    pfx_password_source.add_argument(
+        "--pfx",
+        action="store_true",
+        help="create a PFX and prompt for its password without echo",
+    )
+    pfx_password_source.add_argument(
+        "--pfx-password-file",
+        metavar="PATH",
+        help="create a PFX using a password from a group/other-inaccessible regular file",
+    )
+    pfx_password_source.add_argument(
+        "--pfx-password-stdin",
+        action="store_true",
+        help="create a PFX using a password read from stdin",
+    )
     extract.set_defaults(func=_extract)
 
     cleanup = subparsers.add_parser("cleanup", help="remove only generated artifacts from a marked run directory")

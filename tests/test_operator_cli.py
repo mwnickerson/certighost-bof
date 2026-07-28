@@ -136,6 +136,33 @@ class OperatorCliTests(unittest.TestCase):
                 operator.main(["extract", "--run-dir", str(self.root / "missing-output")])
             with self.assertRaises(SystemExit):
                 operator.main(["prepare", "--timeout", "0"])
+            with self.assertRaises(SystemExit):
+                operator.main(
+                    [
+                        "extract",
+                        "--run-dir",
+                        str(self.root / "conflicting-pfx"),
+                        "--mythic-output",
+                        str(self.root / "output.txt"),
+                        "--pfx",
+                        "--pfx-password-stdin",
+                    ]
+                )
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            with self.assertRaises(SystemExit):
+                operator.main(
+                    [
+                        "extract",
+                        "--run-dir",
+                        str(self.root / "removed-argv-password"),
+                        "--mythic-output",
+                        str(self.root / "output.txt"),
+                        "--pfx-password",
+                        "removed-password-value",
+                    ]
+                )
+        self.assertNotIn("removed-password-value", stderr.getvalue())
 
     def test_prepare_requires_missing_values_and_does_not_create_a_run_dir(self):
         run_dir = self.root / "missing-required"
@@ -225,6 +252,32 @@ class OperatorCliTests(unittest.TestCase):
                 else:
                     self.assertIn("not a valid issued result", stderr)
 
+    def test_extract_retries_after_pre_certificate_parse_failures(self):
+        cases = {
+            "malformed": "unrelated output\n",
+            "nonissued": "certighost: request not issued (disposition=2 request_id=42 last_status=0x80094800)\n",
+        }
+        for name, text in cases.items():
+            with self.subTest(name=name):
+                run_dir, _ = self.prepare_run(f"retry-{name}")
+                failed_source = self.write_output_file(f"retry-{name}-failed.txt", text)
+                rc, stdout, stderr = self.run_cli(
+                    ["extract", "--run-dir", str(run_dir), "--mythic-output", str(failed_source)]
+                )
+                self.assertEqual(rc, 1)
+                self.assertEqual(stdout, "")
+                self.assertFalse((run_dir / operator.CERT_DER_NAME).exists())
+
+                cert_der = self.make_matching_certificate_der(run_dir)
+                issued_source = self.write_output_file(f"retry-{name}-issued.txt", self.issued_output(cert_der))
+                rc, stdout, stderr = self.run_cli(
+                    ["extract", "--run-dir", str(run_dir), "--mythic-output", str(issued_source)]
+                )
+                self.assertEqual(rc, 0, stderr)
+                self.assertIn("VERIFIED certificate/private-key continuity", stdout)
+                self.assertEqual((run_dir / operator.MYTHIC_OUTPUT_NAME).read_bytes(), issued_source.read_bytes())
+                self.assertEqual((run_dir / operator.CERT_DER_NAME).read_bytes(), cert_der)
+
     def test_extract_verifies_matching_certificate_and_copies_output_inside_run_dir(self):
         run_dir, _ = self.prepare_run("extract-match")
         cert_der = self.make_matching_certificate_der(run_dir)
@@ -240,6 +293,36 @@ class OperatorCliTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE((run_dir / operator.CERT_DER_NAME).stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE((run_dir / operator.CERT_PEM_NAME).stat().st_mode), 0o600)
 
+    def test_extract_reruns_preserve_successful_capture_and_certificate_bytes(self):
+        mismatched_der = self.make_mismatched_certificate_der()
+        cases = {
+            "malformed": "unrelated output\n",
+            "nonissued": "certighost: request not issued (disposition=2 request_id=42 last_status=0x80094800)\n",
+            "key-mismatch": self.issued_output(mismatched_der),
+        }
+        for name, text in cases.items():
+            with self.subTest(name=name):
+                run_dir, _ = self.prepare_run(f"rerun-{name}")
+                cert_der = self.make_matching_certificate_der(run_dir)
+                issued_source = self.write_output_file(f"rerun-{name}-issued.txt", self.issued_output(cert_der))
+                rc, stdout, stderr = self.run_cli(
+                    ["extract", "--run-dir", str(run_dir), "--mythic-output", str(issued_source)]
+                )
+                self.assertEqual(rc, 0, stderr)
+                self.assertIn("VERIFIED certificate/private-key continuity", stdout)
+                stored_output_before = (run_dir / operator.MYTHIC_OUTPUT_NAME).read_bytes()
+                cert_der_before = (run_dir / operator.CERT_DER_NAME).read_bytes()
+
+                rerun_source = self.write_output_file(f"rerun-{name}-failed.txt", text)
+                rc, stdout, stderr = self.run_cli(
+                    ["extract", "--run-dir", str(run_dir), "--mythic-output", str(rerun_source)]
+                )
+                self.assertEqual(rc, 1)
+                self.assertEqual(stdout, "")
+                self.assertIn("certificate artifacts already exist", stderr)
+                self.assertEqual((run_dir / operator.MYTHIC_OUTPUT_NAME).read_bytes(), stored_output_before)
+                self.assertEqual((run_dir / operator.CERT_DER_NAME).read_bytes(), cert_der_before)
+
     def test_extract_fails_closed_on_certificate_private_key_mismatch(self):
         run_dir, _ = self.prepare_run("extract-mismatch")
         source = self.write_output_file("mismatch-output.txt", self.issued_output(self.make_mismatched_certificate_der()))
@@ -252,11 +335,70 @@ class OperatorCliTests(unittest.TestCase):
         self.assertFalse((run_dir / operator.CERT_DER_NAME).exists())
         self.assertFalse((run_dir / operator.CERT_PEM_NAME).exists())
 
-    def test_extract_can_create_transient_password_protected_pfx(self):
+    def test_extract_can_create_transient_password_protected_pfx_with_hidden_prompt(self):
         run_dir, _ = self.prepare_run("extract-pfx")
         cert_der = self.make_matching_certificate_der(run_dir)
         source = self.write_output_file("pfx-output.txt", self.issued_output(cert_der))
         password = "fixture-pfx-password"
+        argv = [
+            "extract",
+            "--run-dir",
+            str(run_dir),
+            "--mythic-output",
+            str(source),
+            "--pfx",
+        ]
+        with patch.object(operator.getpass, "getpass", side_effect=[password, password]) as prompt:
+            with patch.object(operator.subprocess, "run", wraps=subprocess.run) as run:
+                rc, stdout, stderr = self.run_cli(argv)
+        self.assertEqual(rc, 0, stderr)
+        self.assertEqual(prompt.call_count, 2)
+        self.assertNotIn(password, " ".join(argv))
+        self.assertNotIn(password, stdout)
+        self.assertNotIn(password, stderr)
+        for call in run.call_args_list:
+            self.assertNotIn(password, " ".join(call.args[0]))
+        pfx = run_dir / operator.PFX_NAME
+        self.assertTrue(pfx.exists())
+        self.assertEqual(stat.S_IMODE(pfx.stat().st_mode), 0o600)
+        self.openssl(["pkcs12", "-in", str(pfx), "-passin", "stdin", "-noout"], input_bytes=(password + "\n").encode())
+
+    def test_extract_can_create_pfx_from_protected_password_file_without_password_in_argv_or_output(self):
+        run_dir, _ = self.prepare_run("extract-pfx-file")
+        cert_der = self.make_matching_certificate_der(run_dir)
+        source = self.write_output_file("pfx-file-output.txt", self.issued_output(cert_der))
+        password = "fixture-file-pfx-password"
+        password_file = self.root / "pfx-password.txt"
+        password_file.write_text(password + "\n", encoding="utf-8")
+        password_file.chmod(0o600)
+        argv = [
+            "extract",
+            "--run-dir",
+            str(run_dir),
+            "--mythic-output",
+            str(source),
+            "--pfx-password-file",
+            str(password_file),
+        ]
+        with patch.object(operator.subprocess, "run", wraps=subprocess.run) as run:
+            rc, stdout, stderr = self.run_cli(argv)
+        self.assertEqual(rc, 0, stderr)
+        self.assertNotIn(password, " ".join(argv))
+        self.assertNotIn(password, stdout)
+        self.assertNotIn(password, stderr)
+        for call in run.call_args_list:
+            self.assertNotIn(password, " ".join(call.args[0]))
+        pfx = run_dir / operator.PFX_NAME
+        self.assertTrue(pfx.exists())
+        self.openssl(["pkcs12", "-in", str(pfx), "-passin", "stdin", "-noout"], input_bytes=(password + "\n").encode())
+
+    def test_extract_rerun_after_pfx_success_preserves_all_final_artifacts(self):
+        run_dir, _ = self.prepare_run("extract-pfx-rerun")
+        cert_der = self.make_matching_certificate_der(run_dir)
+        source = self.write_output_file("pfx-rerun-issued.txt", self.issued_output(cert_der))
+        password_file = self.root / "pfx-rerun-password.txt"
+        password_file.write_text("fixture-rerun-pfx-password\n", encoding="utf-8")
+        password_file.chmod(0o600)
         rc, stdout, stderr = self.run_cli(
             [
                 "extract",
@@ -264,16 +406,124 @@ class OperatorCliTests(unittest.TestCase):
                 str(run_dir),
                 "--mythic-output",
                 str(source),
-                "--pfx-password",
-                password,
+                "--pfx-password-file",
+                str(password_file),
             ]
         )
         self.assertEqual(rc, 0, stderr)
+        self.assertIn("VERIFIED certificate/private-key continuity", stdout)
+        snapshots = {
+            name: (run_dir / name).read_bytes()
+            for name in (
+                operator.MYTHIC_OUTPUT_NAME,
+                operator.CERT_DER_NAME,
+                operator.CERT_PEM_NAME,
+                operator.PFX_NAME,
+            )
+        }
+
+        rerun_source = self.write_output_file("pfx-rerun-malformed.txt", "unrelated output\n")
+        rc, stdout, stderr = self.run_cli(
+            ["extract", "--run-dir", str(run_dir), "--mythic-output", str(rerun_source)]
+        )
+        self.assertEqual(rc, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("certificate artifacts already exist", stderr)
+        for name, content in snapshots.items():
+            self.assertEqual((run_dir / name).read_bytes(), content)
+
+    def test_extract_rejects_group_readable_pfx_password_file(self):
+        run_dir, _ = self.prepare_run("extract-pfx-file-permissions")
+        cert_der = self.make_matching_certificate_der(run_dir)
+        source = self.write_output_file("pfx-file-permissions-output.txt", self.issued_output(cert_der))
+        password = "fixture-exposed-pfx-password"
+        password_file = self.root / "pfx-password-exposed.txt"
+        password_file.write_text(password + "\n", encoding="utf-8")
+        password_file.chmod(0o640)
+        rc, stdout, stderr = self.run_cli(
+            [
+                "extract",
+                "--run-dir",
+                str(run_dir),
+                "--mythic-output",
+                str(source),
+                "--pfx-password-file",
+                str(password_file),
+            ]
+        )
+        self.assertEqual(rc, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("must not be accessible by group or others", stderr)
+        self.assertNotIn(password, stderr)
+        self.assertFalse((run_dir / operator.CERT_DER_NAME).exists())
+        self.assertFalse((run_dir / operator.PFX_NAME).exists())
+
+    def test_extract_can_create_pfx_from_stdin_without_password_in_argv_or_output(self):
+        run_dir, _ = self.prepare_run("extract-pfx-stdin")
+        cert_der = self.make_matching_certificate_der(run_dir)
+        source = self.write_output_file("pfx-stdin-output.txt", self.issued_output(cert_der))
+        password = "fixture-stdin-pfx-password"
+        argv = [
+            "extract",
+            "--run-dir",
+            str(run_dir),
+            "--mythic-output",
+            str(source),
+            "--pfx-password-stdin",
+        ]
+        with patch.object(operator.sys, "stdin", io.BytesIO((password + "\n").encode())):
+            with patch.object(operator.subprocess, "run", wraps=subprocess.run) as run:
+                rc, stdout, stderr = self.run_cli(argv)
+        self.assertEqual(rc, 0, stderr)
+        self.assertNotIn(password, " ".join(argv))
         self.assertNotIn(password, stdout)
+        self.assertNotIn(password, stderr)
+        for call in run.call_args_list:
+            self.assertNotIn(password, " ".join(call.args[0]))
         pfx = run_dir / operator.PFX_NAME
         self.assertTrue(pfx.exists())
-        self.assertEqual(stat.S_IMODE(pfx.stat().st_mode), 0o600)
-        self.openssl(["pkcs12", "-in", str(pfx), "-passin", f"pass:{password}", "-noout"])
+        self.openssl(["pkcs12", "-in", str(pfx), "-passin", "stdin", "-noout"], input_bytes=(password + "\n").encode())
+
+    def test_extract_redacts_password_if_pfx_export_fails(self):
+        run_dir, _ = self.prepare_run("extract-pfx-failure")
+        cert_der = self.make_matching_certificate_der(run_dir)
+        source = self.write_output_file("pfx-failure-output.txt", self.issued_output(cert_der))
+        password = "fixture-failed-pfx-password"
+        original_run = subprocess.run
+
+        def fail_pfx_export(command, *args, **kwargs):
+            if command[1:3] == ["pkcs12", "-export"]:
+                return subprocess.CompletedProcess(command, 1, stdout=b"", stderr=(password + "\n").encode())
+            return original_run(command, *args, **kwargs)
+
+        with patch.object(operator.getpass, "getpass", side_effect=[password, password]):
+            with patch.object(operator.subprocess, "run", side_effect=fail_pfx_export):
+                rc, stdout, stderr = self.run_cli(
+                    ["extract", "--run-dir", str(run_dir), "--mythic-output", str(source), "--pfx"]
+                )
+        self.assertEqual(rc, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("openssl pkcs12 -export failed: exit status 1", stderr)
+        self.assertNotIn(password, stderr)
+        self.assertFalse((run_dir / operator.CERT_DER_NAME).exists())
+        self.assertFalse((run_dir / operator.CERT_PEM_NAME).exists())
+        self.assertFalse((run_dir / operator.PFX_NAME).exists())
+
+    def test_extract_rejects_mismatched_hidden_pfx_password_confirmation(self):
+        run_dir, _ = self.prepare_run("extract-pfx-confirmation")
+        cert_der = self.make_matching_certificate_der(run_dir)
+        source = self.write_output_file("pfx-confirmation-output.txt", self.issued_output(cert_der))
+        with patch.object(operator.getpass, "getpass", side_effect=["first-password", "second-password"]):
+            rc, stdout, stderr = self.run_cli(
+                ["extract", "--run-dir", str(run_dir), "--mythic-output", str(source), "--pfx"]
+            )
+        self.assertEqual(rc, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("confirmation does not match", stderr)
+        self.assertNotIn("first-password", stderr)
+        self.assertNotIn("second-password", stderr)
+        self.assertFalse((run_dir / operator.CERT_DER_NAME).exists())
+        self.assertFalse((run_dir / operator.PFX_NAME).exists())
 
     def test_cleanup_removes_only_known_files_and_reports_unrelated_files(self):
         run_dir, _ = self.prepare_run("cleanup-preserve")
