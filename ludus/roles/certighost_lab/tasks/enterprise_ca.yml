@@ -1,0 +1,201 @@
+---
+- name: Ensure AD CS Certification Authority feature is present
+  ansible.windows.win_feature:
+    name: ADCS-Cert-Authority
+    state: present
+    include_management_tools: true
+  register: certighost_lab_adcs_feature
+
+- name: Reboot after AD CS feature installation when required
+  ansible.windows.win_reboot:
+    reboot_timeout: 1200
+  when: certighost_lab_adcs_feature.reboot_required | default(false)
+
+- name: Ensure Enterprise CA service is configured
+  ansible.windows.win_powershell:
+    parameters:
+      CACommonName: "{{ certighost_lab_ca_common_name }}"
+    script: |
+      param(
+        [string] $CACommonName
+      )
+
+      Import-Module ADCSDeployment -ErrorAction Stop
+
+      $changed = $false
+      $configurationPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration'
+      $activeCA = $null
+      if (Test-Path $configurationPath) {
+        $activeCA = (Get-ItemProperty -Path $configurationPath -Name Active -ErrorAction SilentlyContinue).Active
+      }
+
+      if ([string]::IsNullOrWhiteSpace($activeCA)) {
+        Install-AdcsCertificationAuthority `
+          -CAType EnterpriseRootCA `
+          -CACommonName $CACommonName `
+          -CryptoProviderName 'RSA#Microsoft Software Key Storage Provider' `
+          -KeyLength 2048 `
+          -HashAlgorithmName SHA256 `
+          -ValidityPeriod Years `
+          -ValidityPeriodUnits 5 `
+          -Force `
+          -ErrorAction Stop | Out-Null
+        $changed = $true
+        $activeCA = (Get-ItemProperty -Path $configurationPath -Name Active -ErrorAction Stop).Active
+      }
+
+      if ($activeCA -ne $CACommonName) {
+        throw "Existing CA '$activeCA' does not match requested CA '$CACommonName'."
+      }
+
+      $rootDse = [ADSI] 'LDAP://RootDSE'
+      $configurationNamingContext = [string] $rootDse.configurationNamingContext
+      $caPath = "LDAP://CN=$CACommonName,CN=Enrollment Services,CN=Public Key Services,CN=Services,$configurationNamingContext"
+      try {
+        $caObject = [ADSI] $caPath
+        $null = $caObject.distinguishedName
+      } catch {
+        throw "Active CA '$CACommonName' is not registered as an Enterprise CA. $($_.Exception.Message)"
+      }
+
+      $certSvc = Get-Service -Name CertSvc -ErrorAction Stop
+      if ($certSvc.Status -ne 'Running') {
+        Start-Service -Name CertSvc -ErrorAction Stop
+        $changed = $true
+      }
+
+      $Ansible.Changed = $changed
+      $Ansible.Result = @{
+        active_ca = $activeCA
+        enterprise_registration = $true
+      }
+
+- name: Ensure Machine template is published and chase-triggering
+  ansible.windows.win_powershell:
+    parameters:
+      CACommonName: "{{ certighost_lab_ca_common_name }}"
+      TemplateName: "{{ certighost_lab_ca_template }}"
+    script: |
+      param(
+        [string] $CACommonName,
+        [string] $TemplateName
+      )
+
+      $changed = $false
+      $rootDse = [ADSI] 'LDAP://RootDSE'
+      $configurationNamingContext = [string] $rootDse.configurationNamingContext
+      $caPath = "LDAP://CN=$CACommonName,CN=Enrollment Services,CN=Public Key Services,CN=Services,$configurationNamingContext"
+      $templatePath = "LDAP://CN=$TemplateName,CN=Certificate Templates,CN=Public Key Services,CN=Services,$configurationNamingContext"
+
+      try {
+        $caObject = [ADSI] $caPath
+        $null = $caObject.distinguishedName
+      } catch {
+        throw "Unable to bind Enterprise CA object at $caPath. $($_.Exception.Message)"
+      }
+
+      $publishedTemplates = @($caObject.Properties['certificateTemplates'] | ForEach-Object { [string] $_ })
+      if ($publishedTemplates -notcontains $TemplateName) {
+        & certutil.exe -SetCATemplates "+$TemplateName" | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+          throw "certutil failed to publish template '$TemplateName' with exit code $LASTEXITCODE."
+        }
+        $changed = $true
+      }
+
+      try {
+        $templateObject = [ADSI] $templatePath
+        $null = $templateObject.distinguishedName
+      } catch {
+        throw "Unable to bind certificate template object at $templatePath. $($_.Exception.Message)"
+      }
+
+      $nameFlags = [int] $templateObject.Properties['msPKI-Certificate-Name-Flag'].Value
+      if (($nameFlags -band 0x58000000) -eq 0) {
+        throw "Template '$TemplateName' does not have a Certighost chase-triggering DNS name flag."
+      }
+
+      $Ansible.Changed = $changed
+      $Ansible.Result = @{
+        template = $TemplateName
+        name_flags = ('0x{0:X8}' -f $nameFlags)
+      }
+
+- name: Ensure requested chase fallback policy state
+  ansible.windows.win_powershell:
+    parameters:
+      EnableChaseClientDc: "{{ certighost_lab_enable_chase_client_dc }}"
+    script: |
+      param(
+        [bool] $EnableChaseClientDc
+      )
+
+      $changed = $false
+      $editFlags = (& certutil.exe -getreg 'policy\EditFlags' 2>&1 | Out-String)
+      if ($LASTEXITCODE -ne 0) {
+        throw "certutil failed to read policy EditFlags with exit code $LASTEXITCODE."
+      }
+
+      $isEnabled = $editFlags -match 'EDITF_ENABLECHASECLIENTDC'
+      if ($EnableChaseClientDc -and -not $isEnabled) {
+        & certutil.exe -setreg 'policy\EditFlags' '+EDITF_ENABLECHASECLIENTDC' | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+          throw "certutil failed to enable EDITF_ENABLECHASECLIENTDC with exit code $LASTEXITCODE."
+        }
+        $changed = $true
+        $isEnabled = $true
+      } elseif (-not $EnableChaseClientDc -and $isEnabled) {
+        & certutil.exe -setreg 'policy\EditFlags' '-EDITF_ENABLECHASECLIENTDC' | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+          throw "certutil failed to disable EDITF_ENABLECHASECLIENTDC with exit code $LASTEXITCODE."
+        }
+        $changed = $true
+        $isEnabled = $false
+      }
+
+      $Ansible.Changed = $changed
+      $Ansible.Result = @{
+        editf_enablechaseclientdc = $isEnabled
+      }
+  notify: Restart certificate services after chase policy change
+
+- name: Apply pending certificate service restart
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify CA service and vulnerable chase policy
+  ansible.windows.win_powershell:
+    parameters:
+      CACommonName: "{{ certighost_lab_ca_common_name }}"
+      EnableChaseClientDc: "{{ certighost_lab_enable_chase_client_dc }}"
+    script: |
+      param(
+        [string] $CACommonName,
+        [bool] $EnableChaseClientDc
+      )
+
+      $configurationPath = 'HKLM:\SYSTEM\CurrentControlSet\Services\CertSvc\Configuration'
+      $activeCA = (Get-ItemProperty -Path $configurationPath -Name Active -ErrorAction Stop).Active
+      if ($activeCA -ne $CACommonName) {
+        throw "Active CA '$activeCA' does not match expected CA '$CACommonName'."
+      }
+
+      $certSvc = Get-Service -Name CertSvc -ErrorAction Stop
+      if ($certSvc.Status -ne 'Running') {
+        throw "CertSvc is not running."
+      }
+
+      $editFlags = (& certutil.exe -getreg 'policy\EditFlags' 2>&1 | Out-String)
+      if ($LASTEXITCODE -ne 0) {
+        throw "certutil failed to read policy EditFlags with exit code $LASTEXITCODE."
+      }
+      $isEnabled = $editFlags -match 'EDITF_ENABLECHASECLIENTDC'
+      if ($isEnabled -ne $EnableChaseClientDc) {
+        throw "EDITF_ENABLECHASECLIENTDC state '$isEnabled' does not match requested state '$EnableChaseClientDc'."
+      }
+
+      $Ansible.Changed = $false
+      $Ansible.Result = @{
+        active_ca = $activeCA
+        certsvc_status = $certSvc.Status.ToString()
+        editf_enablechaseclientdc = $isEnabled
+      }

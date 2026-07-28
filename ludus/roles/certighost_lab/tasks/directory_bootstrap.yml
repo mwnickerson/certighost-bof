@@ -1,0 +1,117 @@
+---
+- name: Ensure Active Directory PowerShell support is present
+  ansible.windows.win_feature:
+    name: RSAT-AD-PowerShell
+    state: present
+  register: certighost_lab_ad_tools
+
+- name: Reboot after Active Directory tools installation when required
+  ansible.windows.win_reboot:
+    reboot_timeout: 1200
+  when: certighost_lab_ad_tools.reboot_required | default(false)
+
+- name: Ensure disposable low-privileged operator principal and lab machine quota
+  ansible.windows.win_powershell:
+    parameters:
+      DomainFqdn: "{{ certighost_lab_domain_fqdn }}"
+      SamAccountName: "{{ certighost_lab_operator_sam }}"
+      UserPrincipalName: "{{ certighost_lab_operator_upn }}"
+      DisplayName: "{{ certighost_lab_operator_display_name }}"
+      Description: "{{ certighost_lab_operator_description }}"
+      FixturePassword: "{{ certighost_lab_operator_password }}"
+      MachineAccountQuota: "{{ certighost_lab_machine_account_quota }}"
+    script: |
+      param(
+        [string] $DomainFqdn,
+        [string] $SamAccountName,
+        [string] $UserPrincipalName,
+        [string] $DisplayName,
+        [string] $Description,
+        [string] $FixturePassword,
+        [int] $MachineAccountQuota
+      )
+
+      Import-Module ActiveDirectory -ErrorAction Stop
+
+      $changed = $false
+      $domain = Get-ADDomain -Identity $DomainFqdn -ErrorAction Stop
+      $user = Get-ADUser -Identity $SamAccountName -Properties Enabled, UserPrincipalName, DisplayName, Description, PasswordNeverExpires, CannotChangePassword -ErrorAction SilentlyContinue
+
+      if ($null -eq $user) {
+        $securePassword = ConvertTo-SecureString $FixturePassword -AsPlainText -Force
+        New-ADUser `
+          -Name $DisplayName `
+          -SamAccountName $SamAccountName `
+          -UserPrincipalName $UserPrincipalName `
+          -DisplayName $DisplayName `
+          -Description $Description `
+          -AccountPassword $securePassword `
+          -Enabled $true `
+          -PasswordNeverExpires $true `
+          -CannotChangePassword $true `
+          -Path "CN=Users,$($domain.DistinguishedName)" `
+          -ErrorAction Stop
+        $changed = $true
+        $user = Get-ADUser -Identity $SamAccountName -Properties Enabled, UserPrincipalName, DisplayName, Description, PasswordNeverExpires, CannotChangePassword -ErrorAction Stop
+      }
+
+      $needsAttributeUpdate = (
+        $user.UserPrincipalName -ne $UserPrincipalName -or
+        $user.DisplayName -ne $DisplayName -or
+        $user.Description -ne $Description -or
+        -not $user.PasswordNeverExpires -or
+        -not $user.CannotChangePassword
+      )
+      if ($needsAttributeUpdate) {
+        Set-ADUser `
+          -Identity $user `
+          -UserPrincipalName $UserPrincipalName `
+          -DisplayName $DisplayName `
+          -Description $Description `
+          -PasswordNeverExpires $true `
+          -CannotChangePassword $true `
+          -ErrorAction Stop
+        $changed = $true
+      }
+
+      if (-not $user.Enabled) {
+        Enable-ADAccount -Identity $user -ErrorAction Stop
+        $changed = $true
+      }
+
+      $domainObject = Get-ADObject -Identity $domain.DistinguishedName -Properties 'ms-DS-MachineAccountQuota' -ErrorAction Stop
+      $currentMachineAccountQuota = [int] $domainObject.'ms-DS-MachineAccountQuota'
+      if ($currentMachineAccountQuota -ne $MachineAccountQuota) {
+        Set-ADObject `
+          -Identity $domain.DistinguishedName `
+          -Replace @{'ms-DS-MachineAccountQuota' = $MachineAccountQuota} `
+          -ErrorAction Stop
+        $changed = $true
+      }
+
+      $privilegedGroupNames = @(
+        'Administrators',
+        'Account Operators',
+        'Backup Operators',
+        'Domain Admins',
+        'Enterprise Admins',
+        'Print Operators',
+        'Schema Admins',
+        'Server Operators'
+      )
+      $unexpectedGroups = @(
+        Get-ADPrincipalGroupMembership -Identity $SamAccountName -ErrorAction Stop |
+          Where-Object { $privilegedGroupNames -contains $_.Name } |
+          Select-Object -ExpandProperty Name
+      )
+      if ($unexpectedGroups.Count -gt 0) {
+        throw "Refusing to leave $SamAccountName in privileged groups: $($unexpectedGroups -join ', ')"
+      }
+
+      $Ansible.Changed = $changed
+      $Ansible.Result = @{
+        sam_account_name = $SamAccountName
+        machine_account_quota = $MachineAccountQuota
+        privileged_group_memberships = $unexpectedGroups
+      }
+  no_log: true

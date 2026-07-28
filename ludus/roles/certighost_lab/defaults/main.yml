@@ -1,0 +1,18 @@
+---
+# These values are disposable fixtures for the isolated REDANTONETTA lab only.
+certighost_lab_component: ""
+certighost_lab_supported_components:
+  - directory_bootstrap
+  - enterprise_ca
+
+certighost_lab_domain_fqdn: certighost.redantonetta.test
+certighost_lab_operator_sam: certighostop
+certighost_lab_operator_upn: "{{ certighost_lab_operator_sam }}@{{ certighost_lab_domain_fqdn }}"
+certighost_lab_operator_display_name: Certighost Lab Operator
+certighost_lab_operator_description: Disposable low-privileged lab fixture; not a production credential.
+certighost_lab_operator_password: "LAB-ONLY-NOT-PROD-CertighostOp!2026"
+certighost_lab_machine_account_quota: 10
+
+certighost_lab_ca_common_name: REDANTONETTA-CERTIGHOST-CA
+certighost_lab_ca_template: Machine
+certighost_lab_enable_chase_client_dc: true
