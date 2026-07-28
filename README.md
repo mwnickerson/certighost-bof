@@ -1,5 +1,7 @@
 # Certighost BOF
 
+*This BOF was researched, developed, and tested using a Large Language Model and Hermes Agent*
+
 This repository contains a minimal Windows x64 Beacon Object File for the enrollment-only portion of the Certighost / CVE-2026-54121 lab chain. The BOF submits a caller-supplied in-memory PKCS#10 request through `ICertRequest::Submit` with `CR_IN_BINARY | CR_IN_PKCS10 | CR_IN_RPC`, then returns the disposition, request ID, and issued certificate bytes as base64 text over Beacon output.
 
 Run: `certighost-bof-20260727T143312Z`
