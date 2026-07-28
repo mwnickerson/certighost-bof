@@ -93,6 +93,7 @@ If the CA returns a non-issued disposition, retain the reported request ID and C
 ## Mythic Integration
 
 - [Offline Apollo execute_coff v3 workflow and evidence validation](docs/mythic-integration.md)
+- [Sanitized manual full-chain validation](docs/manual-full-chain-validation.md)
 
 ## Lab Design
 
