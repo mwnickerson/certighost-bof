@@ -54,6 +54,13 @@ CG_BOF_LOCAL int cg_bof_extract_validated_input(char *args, int alen, const cg_i
         !cg_bof_extract_slice(&parser, &out->rmd)) {
         return 0;
     }
+    if (cg_normalize_text_slice(&out->ca_config, CG_ERR_CA_CONFIG_INVALID) != CG_OK ||
+        cg_normalize_text_slice(&out->template_name, CG_ERR_TEMPLATE_INVALID) != CG_OK ||
+        cg_normalize_text_slice(&out->san_dns, CG_ERR_SAN_INVALID) != CG_OK ||
+        cg_normalize_text_slice(&out->cdc, CG_ERR_CDC_INVALID) != CG_OK ||
+        cg_normalize_text_slice(&out->rmd, CG_ERR_RMD_INVALID) != CG_OK) {
+        return 0;
+    }
     if (!cg_bof_slice_equal(&out->csr, &strict->csr) ||
         !cg_bof_slice_equal(&out->ca_config, &strict->ca_config) ||
         !cg_bof_slice_equal(&out->template_name, &strict->template_name) ||

@@ -183,25 +183,38 @@ class OperatorCliTests(unittest.TestCase):
         self.assertIn("ca_config", stderr)
         self.assertFalse(run_dir.exists())
 
+    def test_prepare_rejects_stock_cli_unrepresentable_text_before_creating_secrets(self):
+        run_dir = self.root / "space-template"
+        args = self.prepare_args(run_dir)
+        args[args.index("--template") + 1] = "Domain Controller"
+        rc, stdout, stderr = self.run_cli(args)
+        self.assertEqual(rc, 1)
+        self.assertEqual(stdout, "")
+        self.assertIn("cannot contain spaces", stderr)
+        self.assertFalse(run_dir.exists())
+
     def test_prepare_noninteractive_emits_one_six_field_command_and_secure_modes(self):
         run_dir, stdout = self.prepare_run("noninteractive")
         lines = stdout.splitlines()
         self.assertTrue(lines[0].startswith("execute_coff -Coff certighost.x64.o -Function go"))
         self.assertEqual(stdout.count("execute_coff"), 1)
-        self.assertEqual(lines[0].count("base64:"), 6)
+        self.assertEqual(lines[0].count("base64:"), 1)
+        self.assertEqual(lines[0].count("string:"), 5)
         self.assertEqual(stat.S_IMODE(run_dir.stat().st_mode), 0o700)
         self.assertEqual(stat.S_IMODE((run_dir / operator.KEY_NAME).stat().st_mode), 0o600)
 
         descriptor = json.loads((run_dir / operator.DESCRIPTOR_NAME).read_text(encoding="utf-8"))
         validate_task_descriptor(descriptor)
         self.assertEqual(descriptor["arguments"]["field_order"], list(FIELD_NAMES))
-        decoded = [base64.b64decode(value) for kind, value in descriptor["task_payload"]["params"]["coff_arguments"]]
-        self.assertEqual(decoded[1:], [
-            b"ca01.lab.local\\LAB-CA",
-            b"Machine",
-            b"dc01.lab.local",
-            b"listener.lab.local",
-            b"dc01.lab.local",
+        typed_args = descriptor["task_payload"]["params"]["coff_arguments"]
+        self.assertEqual(typed_args[0][0], "base64")
+        self.assertTrue(base64.b64decode(typed_args[0][1]).startswith(b"\x30"))
+        self.assertEqual(typed_args[1:], [
+            ["string", "ca01.lab.local\\LAB-CA"],
+            ["string", "Machine"],
+            ["string", "dc01.lab.local"],
+            ["string", "listener.lab.local"],
+            ["string", "dc01.lab.local"],
         ])
         self.assertEqual(lines[0], descriptor["operator_command"])
 

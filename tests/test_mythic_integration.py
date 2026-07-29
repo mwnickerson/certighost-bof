@@ -1,6 +1,8 @@
+import base64
 import copy
 import io
 import json
+import struct
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -14,6 +16,7 @@ from tools.certighost_mythic import (
     main,
     pack_apollo_execute_coff_arguments,
     pack_bof_args,
+    pack_legacy_bof_args,
     parse_bof_output,
     unpack_bof_args,
     validate_evidence_bundle,
@@ -39,16 +42,25 @@ def sample_inputs():
     )
 
 
+def pack_wire_fields(fields):
+    payload = b"".join(struct.pack("<I", len(value)) + value for value in fields)
+    return struct.pack("<I", len(payload)) + payload
+
+
+def canonical_wire_fields(inputs):
+    return [inputs.csr_der, *(value + b"\x00" for value in inputs.ordered_fields()[1:])]
+
+
 class PackingTests(unittest.TestCase):
     def test_pack_bof_args_is_byte_exact_for_canonical_apollo_frame(self):
         expected = bytes.fromhex(
-            "63000000"
+            "68000000"
             "050000003003020100"
-            "15000000636130312e6c61622e6c6f63616c5c4c41422d4341"
-            "070000004d616368696e65"
-            "1100000067686f737430312e6c61622e6c6f63616c"
-            "0b00000031302e31302e31302e3434"
-            "0e000000646330312e6c61622e6c6f63616c"
+            "16000000636130312e6c61622e6c6f63616c5c4c41422d434100"
+            "080000004d616368696e6500"
+            "1200000067686f737430312e6c61622e6c6f63616c00"
+            "0c00000031302e31302e31302e343400"
+            "0f000000646330312e6c61622e6c6f63616c00"
         )
         self.assertEqual(pack_bof_args(sample_inputs()), expected)
         self.assertEqual(unpack_bof_args(expected), sample_inputs())
@@ -59,9 +71,58 @@ class PackingTests(unittest.TestCase):
         self.assertEqual(apollo_frame, go_buffer)
         self.assertEqual(apollo_frame[:4], (len(go_buffer) - 4).to_bytes(4, "little"))
 
+    def test_apollo_frame_matches_source_string_and_base64_loader_rules(self):
+        typed_args = [
+            ["base64", base64.b64encode(sample_inputs().csr_der).decode("ascii")],
+            ["string", "ca01.lab.local\\LAB-CA"],
+            ["string", "Machine"],
+            ["string", "ghost01.lab.local"],
+            ["string", "10.10.10.44"],
+            ["string", "dc01.lab.local"],
+        ]
+        packed = bytearray()
+        for kind, value in typed_args:
+            raw = base64.b64decode(value) if kind == "base64" else (value + "\x00").encode("utf-8")
+            packed.extend(struct.pack("<I", len(raw)))
+            packed.extend(raw)
+        source_compatible = struct.pack("<I", len(packed)) + packed
+        self.assertEqual(pack_apollo_execute_coff_arguments(sample_inputs()), source_compatible)
+
+    def test_unpack_strips_one_terminal_nul_and_accepts_legacy_text(self):
+        self.assertEqual(unpack_bof_args(pack_bof_args(sample_inputs())), sample_inputs())
+        self.assertEqual(unpack_bof_args(pack_legacy_bof_args(sample_inputs())), sample_inputs())
+
+        optional_san = CertighostInputs.from_text(
+            csr_der=bytes.fromhex("3003020100"),
+            ca_config="ca01.lab.local\\LAB-CA",
+            template="Machine",
+            san_dns="",
+            cdc="10.10.10.44",
+            rmd="dc01.lab.local",
+        )
+        self.assertEqual(unpack_bof_args(pack_bof_args(optional_san)), optional_san)
+
+    def test_unpack_rejects_embedded_nul_double_terminal_nul_and_empty_required_text(self):
+        fields = canonical_wire_fields(sample_inputs())
+        fields[2] = b"Mac\x00hine\x00"
+        with self.assertRaisesRegex(ValidationError, "embedded NUL"):
+            unpack_bof_args(pack_wire_fields(fields))
+
+        fields = canonical_wire_fields(sample_inputs())
+        fields[2] = b"Machine\x00\x00"
+        with self.assertRaisesRegex(ValidationError, "embedded NUL"):
+            unpack_bof_args(pack_wire_fields(fields))
+
+        fields = canonical_wire_fields(sample_inputs())
+        fields[4] = b"\x00"
+        with self.assertRaisesRegex(ValidationError, "cdc must not be empty"):
+            unpack_bof_args(pack_wire_fields(fields))
+
     def test_unpack_rejects_trailing_data_and_invalid_inputs(self):
         with self.assertRaisesRegex(ValidationError, "trailing data"):
             unpack_bof_args(pack_bof_args(sample_inputs()) + b"\x00")
+        with self.assertRaisesRegex(ValidationError, "trailing data"):
+            unpack_bof_args(pack_wire_fields(canonical_wire_fields(sample_inputs()) + [b""]))
         with self.assertRaisesRegex(ValidationError, "template"):
             pack_bof_args(
                 CertighostInputs.from_text(
@@ -75,6 +136,9 @@ class PackingTests(unittest.TestCase):
             )
 
     def test_unpack_rejects_outer_length_mismatch(self):
+        with self.assertRaisesRegex(ValidationError, "outer length"):
+            unpack_bof_args(b"\x00\x00\x00")
+
         frame = bytearray(pack_bof_args(sample_inputs()))
         frame[:4] = (len(frame) - 3).to_bytes(4, "little")
         with self.assertRaisesRegex(ValidationError, "outer length"):
@@ -85,9 +149,14 @@ class PackingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "outer frame"):
             unpack_bof_args(bytes(frame))
 
+        frame = bytearray(pack_bof_args(sample_inputs()))
+        frame[-19:-15] = (0xFFFFFFFF).to_bytes(4, "little")
+        with self.assertRaisesRegex(ValidationError, "truncated inside rmd"):
+            unpack_bof_args(bytes(frame))
+
 
 class TaskDescriptorTests(unittest.TestCase):
-    def test_descriptor_pins_execute_coff_v3_and_six_binary_arguments(self):
+    def test_descriptor_pins_execute_coff_v3_and_mixed_arguments(self):
         descriptor = build_task_descriptor(
             inputs=sample_inputs(),
             callback_id="callback-fixture-001",
@@ -103,13 +172,19 @@ class TaskDescriptorTests(unittest.TestCase):
             descriptor["task_payload"]["params"]["coff_arguments"],
             [
                 ["base64", "MAMCAQA="],
-                ["base64", "Y2EwMS5sYWIubG9jYWxcTEFCLUNB"],
-                ["base64", "TWFjaGluZQ=="],
-                ["base64", "Z2hvc3QwMS5sYWIubG9jYWw="],
-                ["base64", "MTAuMTAuMTAuNDQ="],
-                ["base64", "ZGMwMS5sYWIubG9jYWw="],
+                ["string", "ca01.lab.local\\LAB-CA"],
+                ["string", "Machine"],
+                ["string", "ghost01.lab.local"],
+                ["string", "10.10.10.44"],
+                ["string", "dc01.lab.local"],
             ],
         )
+        self.assertEqual(
+            descriptor["arguments"]["field_types"],
+            ["base64", "string", "string", "string", "string", "string"],
+        )
+        self.assertEqual(descriptor["operator_command"].count("base64:"), 1)
+        self.assertEqual(descriptor["operator_command"].count("string:"), 5)
 
     def test_descriptor_rejects_argument_order_drift(self):
         descriptor = load_fixture("vulnerable-success.json")["task"]
@@ -122,6 +197,36 @@ class TaskDescriptorTests(unittest.TestCase):
         descriptor["operator_command"] += " base64:AA=="
         with self.assertRaisesRegex(ValidationError, "operator_command"):
             validate_task_descriptor(descriptor)
+
+    def test_descriptor_rejects_type_order_drift_and_extra_argument(self):
+        descriptor = load_fixture("vulnerable-success.json")["task"]
+        descriptor["task_payload"]["params"]["coff_arguments"][1][0] = "base64"
+        with self.assertRaisesRegex(ValidationError, "string typed"):
+            validate_task_descriptor(descriptor)
+
+        descriptor = load_fixture("vulnerable-success.json")["task"]
+        descriptor["task_payload"]["params"]["coff_arguments"].append(["string", "extra"])
+        with self.assertRaisesRegex(ValidationError, "exactly six"):
+            validate_task_descriptor(descriptor)
+
+    def test_descriptor_rejects_text_tokens_stock_apollo_cli_cannot_preserve(self):
+        spaced_template = CertighostInputs.from_text(
+            csr_der=bytes.fromhex("3003020100"),
+            ca_config="ca01.lab.local\\LAB-CA",
+            template="Domain Controller",
+            san_dns="ghost01.lab.local",
+            cdc="10.10.10.44",
+            rmd="dc01.lab.local",
+        )
+        self.assertEqual(unpack_bof_args(pack_bof_args(spaced_template)), spaced_template)
+        with self.assertRaisesRegex(ValidationError, "cannot contain spaces"):
+            build_task_descriptor(
+                inputs=spaced_template,
+                callback_id="callback-fixture-001",
+                agent_version="fixture-apollo-1.0",
+                coff_name="certighost.x64.o",
+                coff_sha256="26752802e3f48f8eb1424a15e4bad0d8b879937ba65e2a7339a31087dc803795",
+            )
 
     def test_describe_task_cli_stays_offline_and_emits_json(self):
         with tempfile.TemporaryDirectory() as tmpdir:

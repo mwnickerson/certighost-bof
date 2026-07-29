@@ -22,6 +22,7 @@ APOLLO_COMMAND_NAME = "execute_coff"
 APOLLO_COMMAND_VERSION = 3
 ENTRYPOINT = "go"
 FIELD_NAMES = ("csr_der", "ca_config", "template", "san_dns", "cdc", "rmd")
+APOLLO_FIELD_TYPES = ("base64", "string", "string", "string", "string", "string")
 
 MAX_CSR_LEN = 262144
 MAX_CA_CONFIG_LEN = 512
@@ -221,8 +222,22 @@ def _validate_dns_value(value: bytes, label: str, optional: bool) -> None:
         raise ValidationError(f"{label} contains an invalid DNS/IP-like character")
 
 
+def _reject_text_nul(value: bytes, label: str) -> None:
+    if b"\x00" in value:
+        raise ValidationError(f"{label} contains an embedded NUL")
+
+
+def _normalize_wire_text_field(value: bytes, label: str) -> bytes:
+    if value.endswith(b"\x00"):
+        value = value[:-1]
+    _reject_text_nul(value, label)
+    return value
+
+
 def validate_inputs(inputs: CertighostInputs) -> None:
     _validate_der_sequence(inputs.csr_der, "csr_der", MAX_CSR_LEN)
+    for label, value in zip(FIELD_NAMES[1:], inputs.ordered_fields()[1:]):
+        _reject_text_nul(value, label)
     _validate_ca_config(inputs.ca_config)
     _validate_template(inputs.template)
     _validate_dns_value(inputs.san_dns, "san_dns", optional=True)
@@ -230,18 +245,37 @@ def validate_inputs(inputs: CertighostInputs) -> None:
     _validate_dns_value(inputs.rmd, "rmd", optional=False)
 
 
-def _pack_bof_payload(inputs: CertighostInputs) -> bytes:
+def validate_stock_operator_command_inputs(inputs: CertighostInputs) -> None:
+    """Reject valid BOF text that Apollo's stock typed-array CLI cannot preserve."""
+    validate_inputs(inputs)
+    for label, value in zip(FIELD_NAMES[1:], inputs.ordered_fields()[1:]):
+        if b" " in value:
+            raise ValidationError(f"{label} cannot contain spaces in stock execute_coff string arguments")
+        if value.startswith((b"'", b'"')) or value.endswith((b"'", b'"')):
+            raise ValidationError(f"{label} cannot start or end with quotes in stock execute_coff string arguments")
+
+
+def _pack_bof_payload(inputs: CertighostInputs, *, terminate_text: bool) -> bytes:
     validate_inputs(inputs)
     packed = bytearray()
-    for value in inputs.ordered_fields():
+    fields = inputs.ordered_fields()
+    for index, value in enumerate(fields):
+        if terminate_text and index != 0:
+            value += b"\x00"
         packed.extend(struct.pack("<I", len(value)))
         packed.extend(value)
     return bytes(packed)
 
 
 def pack_bof_args(inputs: CertighostInputs) -> bytes:
-    """Return the canonical outer frame received intact by go."""
-    payload = _pack_bof_payload(inputs)
+    """Return the canonical mixed Apollo outer frame received intact by go."""
+    payload = _pack_bof_payload(inputs, terminate_text=True)
+    return struct.pack("<I", len(payload)) + payload
+
+
+def pack_legacy_bof_args(inputs: CertighostInputs) -> bytes:
+    """Return the accepted legacy all-base64 outer frame without text NULs."""
+    payload = _pack_bof_payload(inputs, terminate_text=False)
     return struct.pack("<I", len(payload)) + payload
 
 
@@ -268,14 +302,65 @@ def unpack_bof_args(buffer: bytes) -> CertighostInputs:
         offset += field_len
     if offset != len(payload):
         raise ValidationError("packed buffer contains trailing data")
-    inputs = CertighostInputs(*fields)
+    normalized_fields = [fields[0]]
+    normalized_fields.extend(
+        _normalize_wire_text_field(value, field_name)
+        for field_name, value in zip(FIELD_NAMES[1:], fields[1:])
+    )
+    inputs = CertighostInputs(*normalized_fields)
     validate_inputs(inputs)
     return inputs
 
 
+def _text_field_to_string(value: bytes, label: str) -> str:
+    try:
+        return value.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise ValidationError(f"{label} must contain ASCII only") from exc
+
+
+def _apollo_typed_args(inputs: CertighostInputs) -> list[list[str]]:
+    validate_inputs(inputs)
+    typed_args = [["base64", _b64(inputs.csr_der)]]
+    typed_args.extend(
+        ["string", _text_field_to_string(value, label)]
+        for label, value in zip(FIELD_NAMES[1:], inputs.ordered_fields()[1:])
+    )
+    return typed_args
+
+
+def _pack_apollo_typed_args(typed_args: Sequence[Sequence[Any]]) -> bytes:
+    packed = bytearray()
+    for index, (entry, expected_type) in enumerate(zip(typed_args, APOLLO_FIELD_TYPES)):
+        if not isinstance(entry, Sequence) or isinstance(entry, (str, bytes)) or len(entry) != 2:
+            raise ValidationError(f"coff_arguments[{index}] must be a typed array entry")
+        if entry[0] != expected_type:
+            raise ValidationError(f"coff_arguments[{index}] must be a {expected_type} typed argument")
+        value = entry[1]
+        if expected_type == "base64":
+            if not isinstance(value, str):
+                raise ValidationError(f"coff_arguments[{index}] base64 value must be a string")
+            try:
+                packed_value = base64.b64decode(value, validate=True)
+            except (binascii.Error, ValueError) as exc:
+                raise ValidationError(f"coff_arguments[{index}] is not valid base64") from exc
+        else:
+            if not isinstance(value, str):
+                raise ValidationError(f"coff_arguments[{index}] string value must be a string")
+            try:
+                packed_value = (value + "\x00").encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise ValidationError(f"coff_arguments[{index}] is not valid UTF-8 text") from exc
+        packed.extend(struct.pack("<I", len(packed_value)))
+        packed.extend(packed_value)
+    if len(typed_args) != len(APOLLO_FIELD_TYPES):
+        raise ValidationError("task payload must contain exactly six COFF arguments")
+    return struct.pack("<I", len(packed)) + packed
+
+
 def pack_apollo_execute_coff_arguments(inputs: CertighostInputs) -> bytes:
     """Return Apollo execute_coff v3's outer argument frame passed intact to go."""
-    return pack_bof_args(inputs)
+    return _pack_apollo_typed_args(_apollo_typed_args(inputs))
 
 
 def _b64(value: bytes) -> str:
@@ -305,10 +390,11 @@ def build_task_descriptor(
         raise ValidationError("coff_sha256 must be a lowercase SHA-256 hex digest")
     if timeout_seconds <= 0:
         raise ValidationError("timeout_seconds must be greater than zero")
+    validate_stock_operator_command_inputs(inputs)
     go_buffer = pack_bof_args(inputs)
     apollo_buffer = pack_apollo_execute_coff_arguments(inputs)
-    typed_args = [["base64", _b64(value)] for value in inputs.ordered_fields()]
-    operator_args = " ".join(f"base64:{entry[1]}" for entry in typed_args)
+    typed_args = _apollo_typed_args(inputs)
+    operator_args = " ".join(f"{entry[0]}:{entry[1]}" for entry in typed_args)
     return {
         "schema_version": TASK_SCHEMA_VERSION,
         "mode": "describe_only",
@@ -331,7 +417,7 @@ def build_task_descriptor(
         },
         "arguments": {
             "field_order": list(FIELD_NAMES),
-            "field_types": ["base64"] * len(FIELD_NAMES),
+            "field_types": list(APOLLO_FIELD_TYPES),
             "go_buffer_encoding": "base64",
             "go_buffer_b64": _b64(go_buffer),
             "go_buffer_sha256": _sha256(go_buffer),
@@ -404,22 +490,33 @@ def validate_task_descriptor(task: Mapping[str, Any]) -> None:
     if not isinstance(typed_args, list) or len(typed_args) != len(FIELD_NAMES):
         raise ValidationError("task payload must contain exactly six COFF arguments")
     raw_fields: list[bytes] = []
-    for index, entry in enumerate(typed_args):
-        if not isinstance(entry, list) or len(entry) != 2 or entry[0] != "base64":
-            raise ValidationError(f"coff_arguments[{index}] must be a base64 typed argument")
-        try:
-            raw_fields.append(base64.b64decode(entry[1], validate=True))
-        except (binascii.Error, ValueError) as exc:
-            raise ValidationError(f"coff_arguments[{index}] is not valid base64") from exc
+    for index, (entry, expected_type) in enumerate(zip(typed_args, APOLLO_FIELD_TYPES)):
+        if not isinstance(entry, list) or len(entry) != 2 or entry[0] != expected_type:
+            raise ValidationError(f"coff_arguments[{index}] must be a {expected_type} typed argument")
+        if expected_type == "base64":
+            if not isinstance(entry[1], str):
+                raise ValidationError(f"coff_arguments[{index}] base64 value must be a string")
+            try:
+                raw_fields.append(base64.b64decode(entry[1], validate=True))
+            except (binascii.Error, ValueError) as exc:
+                raise ValidationError(f"coff_arguments[{index}] is not valid base64") from exc
+        else:
+            if not isinstance(entry[1], str):
+                raise ValidationError(f"coff_arguments[{index}] string value must be a string")
+            try:
+                raw_fields.append(entry[1].encode("utf-8"))
+            except UnicodeEncodeError as exc:
+                raise ValidationError(f"coff_arguments[{index}] is not valid UTF-8 text") from exc
     inputs = CertighostInputs(*raw_fields)
+    validate_stock_operator_command_inputs(inputs)
     expected_go_buffer = pack_bof_args(inputs)
     arguments = task.get("arguments")
     if not isinstance(arguments, Mapping):
         raise ValidationError("task.arguments must be an object")
     if arguments.get("field_order") != list(FIELD_NAMES):
         raise ValidationError("task argument order does not match the BOF contract")
-    if arguments.get("field_types") != ["base64"] * len(FIELD_NAMES):
-        raise ValidationError("task argument types must remain six binary fields")
+    if arguments.get("field_types") != list(APOLLO_FIELD_TYPES):
+        raise ValidationError("task argument types must remain base64 CSR plus five strings")
     if arguments.get("go_buffer_encoding") != "base64":
         raise ValidationError("task go buffer encoding must remain base64")
     if arguments.get("go_buffer_b64") != _b64(expected_go_buffer):
@@ -435,7 +532,7 @@ def validate_task_descriptor(task: Mapping[str, Any]) -> None:
         raise ValidationError("task Apollo frame does not match execute_coff v3 packing")
     if arguments.get("apollo_execute_coff_frame_bytes") != len(expected_apollo_frame):
         raise ValidationError("task Apollo frame length does not match")
-    operator_args = " ".join(f"base64:{entry[1]}" for entry in typed_args)
+    operator_args = " ".join(f"{entry[0]}:{entry[1]}" for entry in typed_args)
     expected_operator_command = (
         f"{APOLLO_COMMAND_NAME} -Coff {coff['name']} -Function {ENTRYPOINT} "
         f"-Timeout {params['timeout']} -Arguments {operator_args}"

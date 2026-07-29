@@ -29,6 +29,20 @@ CG_CORE_LOCAL int cg_is_dns_value_char(cg_u8 c) {
     return c == (cg_u8)'.' || c == (cg_u8)'-' || c == (cg_u8)'_';
 }
 
+CG_CORE_LOCAL cg_status cg_normalize_text_slice(cg_slice *value, cg_status embedded_nul_error) {
+    cg_u32 i;
+
+    if (value->len != 0u && value->ptr[value->len - 1u] == 0u) {
+        value->len -= 1u;
+    }
+    for (i = 0u; i < value->len; ++i) {
+        if (value->ptr[i] == 0u) {
+            return embedded_nul_error;
+        }
+    }
+    return CG_OK;
+}
+
 CG_CORE_LOCAL cg_status cg_validate_der_sequence(const cg_slice *csr) {
     cg_u32 header_len;
     cg_u32 content_len;
@@ -184,7 +198,7 @@ CG_CORE_API cg_status cg_parse_packed_args(const cg_u8 *buf, cg_u32 len, cg_inpu
     cg_u32 payload_len;
     cg_u32 offset;
     cg_u32 i;
-    int typed_fields = 0;
+    cg_status status;
 
     if (buf == (const cg_u8 *)0 || out == (cg_input *)0) {
         return CG_ERR_NULL;
@@ -192,32 +206,17 @@ CG_CORE_API cg_status cg_parse_packed_args(const cg_u8 *buf, cg_u32 len, cg_inpu
     if (len < 4u) {
         return CG_ERR_PACK_HEADER;
     }
-    if (cg_read_u32_le(buf) == 0u) {
-        payload = buf;
-        payload_len = len;
-        typed_fields = 1;
-    } else {
-        payload_len = cg_read_u32_le(buf);
-        if (payload_len > (len - 4u)) {
-            return CG_ERR_PACK_TRUNCATED;
-        }
-        if (payload_len < (len - 4u)) {
-            return CG_ERR_PACK_TRAILING;
-        }
-        payload = buf + 4u;
+    payload_len = cg_read_u32_le(buf);
+    if (payload_len > (len - 4u)) {
+        return CG_ERR_PACK_TRUNCATED;
     }
+    if (payload_len < (len - 4u)) {
+        return CG_ERR_PACK_TRAILING;
+    }
+    payload = buf + 4u;
     offset = 0u;
     for (i = 0u; i < CG_PACKED_FIELD_COUNT; ++i) {
         cg_u32 field_len;
-        if (typed_fields) {
-            if ((payload_len - offset) < 4u) {
-                return CG_ERR_PACK_TRUNCATED;
-            }
-            if (cg_read_u32_le(payload + offset) != 0u) {
-                return CG_ERR_PACK_HEADER;
-            }
-            offset += 4u;
-        }
         if ((payload_len - offset) < 4u) {
             return CG_ERR_PACK_TRUNCATED;
         }
@@ -232,6 +231,26 @@ CG_CORE_API cg_status cg_parse_packed_args(const cg_u8 *buf, cg_u32 len, cg_inpu
     }
     if (offset != payload_len) {
         return CG_ERR_PACK_TRAILING;
+    }
+    status = cg_normalize_text_slice(&fields[1], CG_ERR_CA_CONFIG_INVALID);
+    if (status != CG_OK) {
+        return status;
+    }
+    status = cg_normalize_text_slice(&fields[2], CG_ERR_TEMPLATE_INVALID);
+    if (status != CG_OK) {
+        return status;
+    }
+    status = cg_normalize_text_slice(&fields[3], CG_ERR_SAN_INVALID);
+    if (status != CG_OK) {
+        return status;
+    }
+    status = cg_normalize_text_slice(&fields[4], CG_ERR_CDC_INVALID);
+    if (status != CG_OK) {
+        return status;
+    }
+    status = cg_normalize_text_slice(&fields[5], CG_ERR_RMD_INVALID);
+    if (status != CG_OK) {
+        return status;
     }
     out->csr = fields[0];
     out->ca_config = fields[1];

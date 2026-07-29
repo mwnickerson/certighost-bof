@@ -23,7 +23,7 @@ from tools.certighost_mythic import (
     ValidationError,
     build_task_descriptor,
     parse_bof_output,
-    validate_inputs,
+    validate_stock_operator_command_inputs,
     validate_task_descriptor,
 )
 
@@ -250,7 +250,7 @@ def _validate_prepare_text(ca_config: str, template: str, target_dc: str, cdc: s
         cdc=cdc,
         rmd=target_dc,
     )
-    validate_inputs(inputs)
+    validate_stock_operator_command_inputs(inputs)
 
 
 def _generate_key_and_csr(openssl: str, run_dir: Path, target_dc: str) -> tuple[Path, Path, Path]:

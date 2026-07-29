@@ -32,25 +32,70 @@ static cg_u32 append_field(cg_u8 *buf, cg_u32 offset, const cg_u8 *value, cg_u32
     return offset;
 }
 
-static cg_u32 append_typed_binary_field(cg_u8 *buf, cg_u32 offset, const cg_u8 *value, cg_u32 len) {
-    write_u32_le(buf + offset, 0u);
-    return append_field(buf, offset + 4u, value, len);
+static cg_u32 append_string_field(cg_u8 *buf, cg_u32 offset, const cg_u8 *value, cg_u32 len) {
+    write_u32_le(buf + offset, len + 1u);
+    offset += 4u;
+    if (len != 0u) {
+        memcpy(buf + offset, value, len);
+        offset += len;
+    }
+    buf[offset] = 0u;
+    return offset + 1u;
+}
+
+static cg_u32 build_pack_with_text_fields(cg_u8 *buf,
+                                          const cg_u8 *csr,
+                                          cg_u32 csr_len,
+                                          const cg_u8 *ca_config,
+                                          cg_u32 ca_config_len,
+                                          const cg_u8 *template_name,
+                                          cg_u32 template_len,
+                                          const cg_u8 *san,
+                                          cg_u32 san_len,
+                                          const cg_u8 *cdc,
+                                          cg_u32 cdc_len,
+                                          const cg_u8 *rmd,
+                                          cg_u32 rmd_len,
+                                          int terminate_text) {
+    cg_u32 offset = TEST_OUTER_HEADER_LEN;
+
+    offset = append_field(buf, offset, csr, csr_len);
+    if (terminate_text) {
+        offset = append_string_field(buf, offset, ca_config, ca_config_len);
+        offset = append_string_field(buf, offset, template_name, template_len);
+        offset = append_string_field(buf, offset, san, san_len);
+        offset = append_string_field(buf, offset, cdc, cdc_len);
+        offset = append_string_field(buf, offset, rmd, rmd_len);
+    } else {
+        offset = append_field(buf, offset, ca_config, ca_config_len);
+        offset = append_field(buf, offset, template_name, template_len);
+        offset = append_field(buf, offset, san, san_len);
+        offset = append_field(buf, offset, cdc, cdc_len);
+        offset = append_field(buf, offset, rmd, rmd_len);
+    }
+    write_u32_le(buf, offset - TEST_OUTER_HEADER_LEN);
+    return offset;
 }
 
 static cg_u32 build_pack(cg_u8 *buf, const cg_u8 *csr, cg_u32 csr_len, const cg_u8 *template_name, cg_u32 template_len, const cg_u8 *san, cg_u32 san_len) {
     static const cg_u8 ca_config[] = "ca01.lab.local\\LAB-CA";
     static const cg_u8 cdc[] = "10.10.10.44";
     static const cg_u8 rmd[] = "dc01.lab.local";
-    cg_u32 offset = TEST_OUTER_HEADER_LEN;
 
-    offset = append_field(buf, offset, csr, csr_len);
-    offset = append_field(buf, offset, ca_config, (cg_u32)sizeof(ca_config) - 1u);
-    offset = append_field(buf, offset, template_name, template_len);
-    offset = append_field(buf, offset, san, san_len);
-    offset = append_field(buf, offset, cdc, (cg_u32)sizeof(cdc) - 1u);
-    offset = append_field(buf, offset, rmd, (cg_u32)sizeof(rmd) - 1u);
-    write_u32_le(buf, offset - TEST_OUTER_HEADER_LEN);
-    return offset;
+    return build_pack_with_text_fields(buf,
+                                       csr,
+                                       csr_len,
+                                       ca_config,
+                                       (cg_u32)sizeof(ca_config) - 1u,
+                                       template_name,
+                                       template_len,
+                                       san,
+                                       san_len,
+                                       cdc,
+                                       (cg_u32)sizeof(cdc) - 1u,
+                                       rmd,
+                                       (cg_u32)sizeof(rmd) - 1u,
+                                       1);
 }
 
 static cg_u32 build_valid_pack(cg_u8 *buf, const cg_u8 *template_name, cg_u32 template_len, const cg_u8 *san, cg_u32 san_len) {
@@ -59,21 +104,28 @@ static cg_u32 build_valid_pack(cg_u8 *buf, const cg_u8 *template_name, cg_u32 te
     return build_pack(buf, csr, (cg_u32)sizeof(csr), template_name, template_len, san, san_len);
 }
 
-static cg_u32 build_valid_apollo_pack(cg_u8 *buf) {
+static cg_u32 build_valid_legacy_pack(cg_u8 *buf) {
     static const cg_u8 csr[] = {0x30u, 0x03u, 0x02u, 0x01u, 0x00u};
     static const cg_u8 ca_config[] = "ca01.lab.local\\LAB-CA";
     static const cg_u8 template_name[] = "Machine";
     static const cg_u8 san[] = "ghost01.lab.local";
     static const cg_u8 cdc[] = "10.10.10.44";
     static const cg_u8 rmd[] = "dc01.lab.local";
-    cg_u32 offset = 0u;
 
-    offset = append_typed_binary_field(buf, offset, csr, (cg_u32)sizeof(csr));
-    offset = append_typed_binary_field(buf, offset, ca_config, (cg_u32)sizeof(ca_config) - 1u);
-    offset = append_typed_binary_field(buf, offset, template_name, (cg_u32)sizeof(template_name) - 1u);
-    offset = append_typed_binary_field(buf, offset, san, (cg_u32)sizeof(san) - 1u);
-    offset = append_typed_binary_field(buf, offset, cdc, (cg_u32)sizeof(cdc) - 1u);
-    return append_typed_binary_field(buf, offset, rmd, (cg_u32)sizeof(rmd) - 1u);
+    return build_pack_with_text_fields(buf,
+                                       csr,
+                                       (cg_u32)sizeof(csr),
+                                       ca_config,
+                                       (cg_u32)sizeof(ca_config) - 1u,
+                                       template_name,
+                                       (cg_u32)sizeof(template_name) - 1u,
+                                       san,
+                                       (cg_u32)sizeof(san) - 1u,
+                                       cdc,
+                                       (cg_u32)sizeof(cdc) - 1u,
+                                       rmd,
+                                       (cg_u32)sizeof(rmd) - 1u,
+                                       0);
 }
 
 static cg_u32 field_header_offset(const cg_u8 *buf, cg_u32 field_index) {
@@ -101,8 +153,11 @@ static void expect_status(const char *name, cg_status got, cg_status want) {
 }
 
 static void test_valid_construction(void) {
+    static const cg_u8 ca_config[] = "ca01.lab.local\\LAB-CA";
     static const cg_u8 template_name[] = "Machine";
     static const cg_u8 san[] = "ghost01.lab.local";
+    static const cg_u8 cdc[] = "10.10.10.44";
+    static const cg_u8 rmd[] = "dc01.lab.local";
     static const char expected[] =
         "CertificateTemplate:Machine\n"
         "SAN:dns=ghost01.lab.local\n"
@@ -123,6 +178,16 @@ static void test_valid_construction(void) {
     } else {
         printf("PASS canonical outer frame length\n");
     }
+    if (input.ca_config.len != (cg_u32)sizeof(ca_config) - 1u ||
+        input.template_name.len != (cg_u32)sizeof(template_name) - 1u ||
+        input.san_dns.len != (cg_u32)sizeof(san) - 1u ||
+        input.cdc.len != (cg_u32)sizeof(cdc) - 1u ||
+        input.rmd.len != (cg_u32)sizeof(rmd) - 1u) {
+        fprintf(stderr, "FAIL terminal NUL text normalization\n");
+        failures += 1;
+    } else {
+        printf("PASS terminal NUL text normalization\n");
+    }
     status = cg_build_attributes(&input, attributes, (cg_u32)sizeof(attributes), &attributes_len);
     expect_status("valid attribute construction", status, CG_OK);
     if (status == CG_OK && (attributes_len != (cg_u32)strlen(expected) || strcmp(attributes, expected) != 0)) {
@@ -133,12 +198,12 @@ static void test_valid_construction(void) {
     }
 }
 
-static void test_valid_apollo_pack(void) {
+static void test_valid_legacy_pack(void) {
     cg_u8 packed[TEST_BUF_CAP];
-    cg_u32 packed_len = build_valid_apollo_pack(packed);
+    cg_u32 packed_len = build_valid_legacy_pack(packed);
     cg_input input;
 
-    expect_status("Apollo typed binary arguments", cg_parse_packed_args(packed, packed_len, &input), CG_OK);
+    expect_status("legacy all-base64 text arguments", cg_parse_packed_args(packed, packed_len, &input), CG_OK);
 }
 
 static void test_optional_san(void) {
@@ -164,6 +229,122 @@ static void test_optional_san(void) {
     } else if (status == CG_OK) {
         printf("PASS optional SAN attribute bytes\n");
     }
+}
+
+static void test_embedded_nul_rejected(void) {
+    static const cg_u8 csr[] = {0x30u, 0x03u, 0x02u, 0x01u, 0x00u};
+    static const cg_u8 ca_config[] = "ca01.lab.local\\LAB-CA";
+    static const cg_u8 template_name[] = {'M', 'a', 'c', 0u, 'h', 'i', 'n', 'e'};
+    static const cg_u8 san[] = "ghost01.lab.local";
+    static const cg_u8 cdc[] = "10.10.10.44";
+    static const cg_u8 rmd[] = "dc01.lab.local";
+    cg_u8 packed[TEST_BUF_CAP];
+    cg_u32 packed_len = build_pack_with_text_fields(packed,
+                                                    csr,
+                                                    (cg_u32)sizeof(csr),
+                                                    ca_config,
+                                                    (cg_u32)sizeof(ca_config) - 1u,
+                                                    template_name,
+                                                    (cg_u32)sizeof(template_name),
+                                                    san,
+                                                    (cg_u32)sizeof(san) - 1u,
+                                                    cdc,
+                                                    (cg_u32)sizeof(cdc) - 1u,
+                                                    rmd,
+                                                    (cg_u32)sizeof(rmd) - 1u,
+                                                    1);
+    cg_input input;
+
+    expect_status("embedded text NUL rejected", cg_parse_packed_args(packed, packed_len, &input), CG_ERR_TEMPLATE_INVALID);
+}
+
+static void test_exactly_one_terminal_nul_stripped(void) {
+    static const cg_u8 csr[] = {0x30u, 0x03u, 0x02u, 0x01u, 0x00u};
+    static const cg_u8 ca_config[] = "ca01.lab.local\\LAB-CA";
+    static const cg_u8 template_name[] = "Machine";
+    static const cg_u8 san[] = "ghost01.lab.local";
+    static const cg_u8 cdc[] = "10.10.10.44";
+    static const cg_u8 rmd[] = "dc01.lab.local";
+    cg_u8 packed[TEST_BUF_CAP];
+    cg_u32 packed_len = build_pack_with_text_fields(packed,
+                                                    csr,
+                                                    (cg_u32)sizeof(csr),
+                                                    ca_config,
+                                                    (cg_u32)sizeof(ca_config) - 1u,
+                                                    template_name,
+                                                    (cg_u32)sizeof(template_name),
+                                                    san,
+                                                    (cg_u32)sizeof(san) - 1u,
+                                                    cdc,
+                                                    (cg_u32)sizeof(cdc) - 1u,
+                                                    rmd,
+                                                    (cg_u32)sizeof(rmd) - 1u,
+                                                    1);
+    cg_input input;
+
+    expect_status("double terminal NUL rejected", cg_parse_packed_args(packed, packed_len, &input), CG_ERR_TEMPLATE_INVALID);
+}
+
+static void test_empty_required_after_normalization(void) {
+    static const cg_u8 csr[] = {0x30u, 0x03u, 0x02u, 0x01u, 0x00u};
+    static const cg_u8 ca_config[] = "ca01.lab.local\\LAB-CA";
+    static const cg_u8 template_name[] = "Machine";
+    static const cg_u8 san[] = "ghost01.lab.local";
+    static const cg_u8 rmd[] = "dc01.lab.local";
+    cg_u8 packed[TEST_BUF_CAP];
+    cg_u32 packed_len = build_pack_with_text_fields(packed,
+                                                    csr,
+                                                    (cg_u32)sizeof(csr),
+                                                    ca_config,
+                                                    (cg_u32)sizeof(ca_config) - 1u,
+                                                    template_name,
+                                                    (cg_u32)sizeof(template_name) - 1u,
+                                                    san,
+                                                    (cg_u32)sizeof(san) - 1u,
+                                                    (const cg_u8 *)"",
+                                                    0u,
+                                                    rmd,
+                                                    (cg_u32)sizeof(rmd) - 1u,
+                                                    1);
+    cg_input input;
+
+    expect_status("empty required string rejected", cg_parse_packed_args(packed, packed_len, &input), CG_ERR_CDC_EMPTY);
+}
+
+static void test_wrong_order_rejected(void) {
+    static const cg_u8 ca_config[] = "ca01.lab.local\\LAB-CA";
+    static const cg_u8 template_name[] = "Machine";
+    static const cg_u8 san[] = "ghost01.lab.local";
+    static const cg_u8 cdc[] = "10.10.10.44";
+    static const cg_u8 rmd[] = "dc01.lab.local";
+    cg_u8 packed[TEST_BUF_CAP];
+    cg_u32 packed_len = build_pack_with_text_fields(packed,
+                                                    template_name,
+                                                    (cg_u32)sizeof(template_name) - 1u,
+                                                    ca_config,
+                                                    (cg_u32)sizeof(ca_config) - 1u,
+                                                    template_name,
+                                                    (cg_u32)sizeof(template_name) - 1u,
+                                                    san,
+                                                    (cg_u32)sizeof(san) - 1u,
+                                                    cdc,
+                                                    (cg_u32)sizeof(cdc) - 1u,
+                                                    rmd,
+                                                    (cg_u32)sizeof(rmd) - 1u,
+                                                    1);
+    cg_input input;
+
+    expect_status("wrong six-field order rejected", cg_parse_packed_args(packed, packed_len, &input), CG_ERR_CSR_DER);
+}
+
+static void test_missing_outer_frame_rejected(void) {
+    static const cg_u8 template_name[] = "Machine";
+    static const cg_u8 san[] = "ghost01.lab.local";
+    cg_u8 packed[TEST_BUF_CAP];
+    cg_u32 packed_len = build_valid_pack(packed, template_name, (cg_u32)sizeof(template_name) - 1u, san, (cg_u32)sizeof(san) - 1u);
+    cg_input input;
+
+    expect_status("missing outer frame rejected", cg_parse_packed_args(packed + TEST_OUTER_HEADER_LEN, packed_len - TEST_OUTER_HEADER_LEN, &input), CG_ERR_PACK_TRAILING);
 }
 
 static void test_empty_csr(void) {
@@ -300,8 +481,13 @@ static void test_base64(void) {
 
 int main(void) {
     test_valid_construction();
-    test_valid_apollo_pack();
+    test_valid_legacy_pack();
     test_optional_san();
+    test_embedded_nul_rejected();
+    test_exactly_one_terminal_nul_stripped();
+    test_empty_required_after_normalization();
+    test_wrong_order_rejected();
+    test_missing_outer_frame_rejected();
     test_empty_csr();
     test_overlong_template();
     test_malformed_der();
