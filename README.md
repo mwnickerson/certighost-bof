@@ -166,7 +166,13 @@ Then use the approved disposable-lab rollback workflow for the DC and CA snapsho
 
 ## Argument Contract
 
-Apollo `execute_coff` v3 packs the mixed typed array as one outer little-endian `u32` payload length followed by six length-prefixed slices. The first `base64` entry is decoded raw DER. Each `string` entry is UTF-8 bytes plus exactly one terminal NUL inside its slice length.
+The canonical operator ABI remains one `base64` CSR followed by five `string` values. The deployed 233-line Apollo `execute_coff.py` source with SHA-256 `f6dfdfc6409ac28f17ecc6b0ec6c65f458767c663d340c30f5170c88ade4b2b6` leaves that typed array for the agent. Its `execute_coff.cs` path converts the entries to RunOF `-b` / `-z` arguments, and RunOF `ParsedArgs.SerialiseArgs` passes `go` six raw records with no outer payload-length word:
+
+```text
+u32 type=0, u32 length, data
+```
+
+Both the decoded `base64` DER and each `string` record use RunOF type `BINARY=0`. The deployed RunOF `-z` path appends one `\0` before constructing `OfArg`, and `OfArg(string)` appends another `\0` before ASCII encoding, so each typed string data slice reaches `SerialiseArgs` with exactly two terminal NUL bytes. Newer COFFLoader paths use a different compatible frame: one outer little-endian `u32` payload length followed by six `u32 length, data` slices whose typed strings carry exactly one terminal NUL. The BOF parses both layouts directly instead of asking `BeaconDataParse` / `BeaconDataExtract` to reinterpret validated bytes, because those loader APIs do not share framing semantics across the two paths.
 
 ```text
 [base64, csr_der_b64]
@@ -177,7 +183,7 @@ Apollo `execute_coff` v3 packs the mixed typed array as one outer little-endian 
 [string, rmd]
 ```
 
-The BOF strips exactly one terminal NUL from each text slice before validation and use. It rejects embedded NULs, empty required text after normalization, malformed framing, truncation, trailing bytes, extra arguments, and invalid field order. For compatibility with older packed callers, valid legacy all-base64 text slices without terminal NULs are still accepted.
+The BOF applies framing-specific text normalization before validation and use. RunOF accepts either legacy all-base64 text slices with no NUL bytes or the exact typed-string form with two terminal NULs, stripping both. It rejects RunOF one-NUL, three-or-more-NUL, and embedded-NUL forms. COFFLoader accepts either legacy all-base64 text slices with no NUL bytes or the canonical mixed form with exactly one terminal NUL, stripping one only in the latter case; it rejects double or embedded NULs. Once the leading `type=0` word selects RunOF framing, any later nonzero RunOF type tag fails closed. Both modes still reject empty required text after normalization, malformed framing, truncation, trailing bytes, extra arguments, and invalid field order.
 
 | Field | Validation |
 | --- | --- |

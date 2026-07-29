@@ -62,6 +62,22 @@ class ReadmeWorkflowTests(unittest.TestCase):
             self.assertTrue(any(command.count("string:") == 5 for command in commands))
             self.assertIn("terminal NUL", document)
             self.assertIn("legacy all-base64", document)
+            self.assertIn("two terminal NUL", document)
+            self.assertIn("COFFLoader", document)
+        self.assertIn("COFFLoader accepts either legacy all-base64", self.readme)
+        self.assertIn("COFFLoader accepts either legacy all-base64", self.integration)
+        self.assertIn("both RunOF and COFFLoader layouts", self.manual)
+
+    def test_framing_docs_pin_the_deployed_runof_root_cause(self):
+        for document in (self.readme, self.integration):
+            self.assertIn(
+                "f6dfdfc6409ac28f17ecc6b0ec6c65f458767c663d340c30f5170c88ade4b2b6",
+                document,
+            )
+            self.assertIn("no outer payload-length word", document)
+            self.assertIn("type=0", document)
+            self.assertIn("BeaconDataParse", document)
+            self.assertIn("OfArg", document)
 
 
 if __name__ == "__main__":

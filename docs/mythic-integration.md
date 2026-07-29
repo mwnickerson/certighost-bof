@@ -17,18 +17,24 @@ The canonical task uses Apollo's actual typed-array schema:
 ]
 ```
 
-Apollo v3 decodes the `base64` value into raw bytes, packs each `string` as UTF-8 bytes plus one terminal NUL, prefixes every slice with a little-endian `u32` length, then prefixes the whole payload with one outer little-endian `u32` length. The exact field order is:
+The deployed 233-line `execute_coff.py` source with SHA-256 `f6dfdfc6409ac28f17ecc6b0ec6c65f458767c663d340c30f5170c88ade4b2b6` leaves this typed array for the agent. Apollo's `execute_coff.cs` converts the `base64` and `string` entries to RunOF `-b` / `-z` arguments. RunOF `ParsedArgs.SerialiseArgs` then passes the raw buffer and its full length directly to `go`, with no outer payload-length word:
+
+```text
+u32 type=0, u32 length, data
+```
+
+The decoded `base64` DER and all five string slices are serialized as RunOF `BINARY=0` records. In `ParsedArgs.cs`, the `-z` path first calls `new OfArg(arg.Substring(3) + "\0")`, then `OfArg(string)` performs `Encoding.ASCII.GetBytes(arg_data + "\0")`, so each deployed typed string data slice contains exactly two terminal NUL bytes. The exact field order is:
 
 ```text
 csr_der, ca_config, template, san_dns, cdc, rmd
 ```
 
-The BOF pre-parser validates the outer frame before Beacon parsing, then both parsers strip exactly one terminal NUL from the five text slices. Embedded NULs remain invalid, required text fields must still be non-empty after normalization, and empty `san_dns` remains valid. Valid legacy all-base64 text slices without terminal NULs are accepted for compatibility, but new tasks must use the mixed schema above.
+Newer COFFLoader paths present a different accepted frame: one outer little-endian `u32` payload length followed by six `u32 length, data` slices whose typed strings carry exactly one terminal NUL. The BOF strict parser accepts both layouts directly and does not perform a second `BeaconDataParse` / `BeaconDataExtract` pass, because those loader APIs do not expose the same framing semantics. RunOF accepts either legacy all-base64 text slices with no NUL bytes or the exact two-terminal-NUL typed-string form, strips exactly both, and rejects one-NUL, three-or-more-NUL, and embedded-NUL forms. COFFLoader accepts either legacy all-base64 text slices with no NUL bytes or the canonical one-terminal-NUL typed-string form, strips one only in the latter case, and rejects double or embedded NULs. Once the leading `type=0` word selects RunOF framing, any later nonzero RunOF type tag fails closed. Required text fields must still be non-empty after normalization, and empty `san_dns` remains valid. New tasks must use the mixed schema above.
 
 The offline descriptor stores the same canonical frame twice for review:
 
-- `go_buffer_b64` is the exact outer frame received by `go`.
-- `apollo_execute_coff_frame_hex` is the same frame in hex.
+- `go_buffer_b64` is the exact deployed RunOF buffer received by `go`.
+- `apollo_execute_coff_frame_hex` is the same no-outer/type-tag frame in hex.
 - `field_types` is `["base64", "string", "string", "string", "string", "string"]`.
 
 ## Stock operator sequence

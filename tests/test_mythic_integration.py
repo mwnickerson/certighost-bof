@@ -10,12 +10,14 @@ from pathlib import Path
 
 from tools.certighost_mythic import (
     CertighostInputs,
+    DEPLOYED_EXECUTE_COFF_SHA256,
     ValidationError,
     build_task_descriptor,
     compare_filesystem_snapshots,
     main,
     pack_apollo_execute_coff_arguments,
     pack_bof_args,
+    pack_coffloader_bof_args,
     pack_legacy_bof_args,
     parse_bof_output,
     unpack_bof_args,
@@ -47,31 +49,60 @@ def pack_wire_fields(fields):
     return struct.pack("<I", len(payload)) + payload
 
 
-def canonical_wire_fields(inputs):
+def pack_runof_wire_fields(fields, *, types=None):
+    if types is None:
+        types = [0] * len(fields)
+    return b"".join(
+        struct.pack("<II", field_type, len(value)) + value
+        for field_type, value in zip(types, fields)
+    )
+
+
+def coffloader_wire_fields(inputs):
     return [inputs.csr_der, *(value + b"\x00" for value in inputs.ordered_fields()[1:])]
 
 
+def runof_typed_wire_fields(inputs):
+    return [inputs.csr_der, *(value + b"\x00\x00" for value in inputs.ordered_fields()[1:])]
+
+
+def pack_legacy_runof_wire_fields(inputs):
+    return pack_runof_wire_fields(list(inputs.ordered_fields()))
+
+
 class PackingTests(unittest.TestCase):
-    def test_pack_bof_args_is_byte_exact_for_canonical_apollo_frame(self):
+    def test_deployed_execute_coff_source_hash_is_pinned(self):
+        self.assertEqual(
+            DEPLOYED_EXECUTE_COFF_SHA256,
+            "f6dfdfc6409ac28f17ecc6b0ec6c65f458767c663d340c30f5170c88ade4b2b6",
+        )
+
+    def test_pack_bof_args_is_byte_exact_for_deployed_runof_frame(self):
         expected = bytes.fromhex(
-            "68000000"
+            "00000000"
             "050000003003020100"
-            "16000000636130312e6c61622e6c6f63616c5c4c41422d434100"
-            "080000004d616368696e6500"
-            "1200000067686f737430312e6c61622e6c6f63616c00"
-            "0c00000031302e31302e31302e343400"
-            "0f000000646330312e6c61622e6c6f63616c00"
+            "00000000"
+            "17000000636130312e6c61622e6c6f63616c5c4c41422d43410000"
+            "00000000"
+            "090000004d616368696e650000"
+            "00000000"
+            "1300000067686f737430312e6c61622e6c6f63616c0000"
+            "00000000"
+            "0d00000031302e31302e31302e34340000"
+            "00000000"
+            "10000000646330312e6c61622e6c6f63616c0000"
         )
         self.assertEqual(pack_bof_args(sample_inputs()), expected)
         self.assertEqual(unpack_bof_args(expected), sample_inputs())
 
-    def test_apollo_frame_is_the_intact_go_buffer(self):
+    def test_deployed_apollo_runof_frame_is_the_intact_go_buffer(self):
         go_buffer = pack_bof_args(sample_inputs())
         apollo_frame = pack_apollo_execute_coff_arguments(sample_inputs())
         self.assertEqual(apollo_frame, go_buffer)
-        self.assertEqual(apollo_frame[:4], (len(go_buffer) - 4).to_bytes(4, "little"))
+        self.assertEqual(apollo_frame[:4], (0).to_bytes(4, "little"))
+        self.assertEqual(apollo_frame[4:8], len(sample_inputs().csr_der).to_bytes(4, "little"))
 
-    def test_apollo_frame_matches_source_string_and_base64_loader_rules(self):
+    def test_apollo_frame_matches_deployed_runof_no_outer_type_tag_rules(self):
         typed_args = [
             ["base64", base64.b64encode(sample_inputs().csr_der).decode("ascii")],
             ["string", "ca01.lab.local\\LAB-CA"],
@@ -82,15 +113,22 @@ class PackingTests(unittest.TestCase):
         ]
         packed = bytearray()
         for kind, value in typed_args:
-            raw = base64.b64decode(value) if kind == "base64" else (value + "\x00").encode("utf-8")
-            packed.extend(struct.pack("<I", len(raw)))
+            raw = base64.b64decode(value) if kind == "base64" else (value + "\x00\x00").encode("utf-8")
+            packed.extend(struct.pack("<II", 0, len(raw)))
             packed.extend(raw)
-        source_compatible = struct.pack("<I", len(packed)) + packed
+        source_compatible = bytes(packed)
         self.assertEqual(pack_apollo_execute_coff_arguments(sample_inputs()), source_compatible)
 
-    def test_unpack_strips_one_terminal_nul_and_accepts_legacy_text(self):
+    def test_pack_legacy_bof_args_remains_outer_length_no_nul_frame(self):
+        expected = pack_wire_fields(list(sample_inputs().ordered_fields()))
+        self.assertEqual(pack_legacy_bof_args(sample_inputs()), expected)
+        self.assertNotEqual(pack_legacy_bof_args(sample_inputs()), pack_legacy_runof_wire_fields(sample_inputs()))
+
+    def test_unpack_accepts_runof_double_nul_coffloader_one_nul_and_both_legacy_no_nul_layouts(self):
         self.assertEqual(unpack_bof_args(pack_bof_args(sample_inputs())), sample_inputs())
+        self.assertEqual(unpack_bof_args(pack_coffloader_bof_args(sample_inputs())), sample_inputs())
         self.assertEqual(unpack_bof_args(pack_legacy_bof_args(sample_inputs())), sample_inputs())
+        self.assertEqual(unpack_bof_args(pack_legacy_runof_wire_fields(sample_inputs())), sample_inputs())
 
         optional_san = CertighostInputs.from_text(
             csr_der=bytes.fromhex("3003020100"),
@@ -101,28 +139,45 @@ class PackingTests(unittest.TestCase):
             rmd="dc01.lab.local",
         )
         self.assertEqual(unpack_bof_args(pack_bof_args(optional_san)), optional_san)
+        self.assertEqual(unpack_bof_args(pack_coffloader_bof_args(optional_san)), optional_san)
 
-    def test_unpack_rejects_embedded_nul_double_terminal_nul_and_empty_required_text(self):
-        fields = canonical_wire_fields(sample_inputs())
+    def test_unpack_rejects_coffloader_double_nul_embedded_nul_and_empty_required_text(self):
+        fields = coffloader_wire_fields(sample_inputs())
         fields[2] = b"Mac\x00hine\x00"
         with self.assertRaisesRegex(ValidationError, "embedded NUL"):
             unpack_bof_args(pack_wire_fields(fields))
 
-        fields = canonical_wire_fields(sample_inputs())
+        fields = coffloader_wire_fields(sample_inputs())
         fields[2] = b"Machine\x00\x00"
         with self.assertRaisesRegex(ValidationError, "embedded NUL"):
             unpack_bof_args(pack_wire_fields(fields))
 
-        fields = canonical_wire_fields(sample_inputs())
+        fields = coffloader_wire_fields(sample_inputs())
         fields[4] = b"\x00"
         with self.assertRaisesRegex(ValidationError, "cdc must not be empty"):
             unpack_bof_args(pack_wire_fields(fields))
+
+    def test_unpack_rejects_runof_one_nul_three_nul_and_embedded_nul(self):
+        fields = runof_typed_wire_fields(sample_inputs())
+        fields[2] = b"Machine\x00"
+        with self.assertRaisesRegex(ValidationError, "RunOF"):
+            unpack_bof_args(pack_runof_wire_fields(fields))
+
+        fields = runof_typed_wire_fields(sample_inputs())
+        fields[2] = b"Machine\x00\x00\x00"
+        with self.assertRaisesRegex(ValidationError, "RunOF"):
+            unpack_bof_args(pack_runof_wire_fields(fields))
+
+        fields = runof_typed_wire_fields(sample_inputs())
+        fields[2] = b"Mac\x00hine\x00\x00"
+        with self.assertRaisesRegex(ValidationError, "embedded NUL"):
+            unpack_bof_args(pack_runof_wire_fields(fields))
 
     def test_unpack_rejects_trailing_data_and_invalid_inputs(self):
         with self.assertRaisesRegex(ValidationError, "trailing data"):
             unpack_bof_args(pack_bof_args(sample_inputs()) + b"\x00")
         with self.assertRaisesRegex(ValidationError, "trailing data"):
-            unpack_bof_args(pack_wire_fields(canonical_wire_fields(sample_inputs()) + [b""]))
+            unpack_bof_args(pack_wire_fields(coffloader_wire_fields(sample_inputs()) + [b""]))
         with self.assertRaisesRegex(ValidationError, "template"):
             pack_bof_args(
                 CertighostInputs.from_text(
@@ -135,21 +190,37 @@ class PackingTests(unittest.TestCase):
                 )
             )
 
+    def test_unpack_rejects_runof_types_truncation_trailing_and_seventh_field(self):
+        fields = runof_typed_wire_fields(sample_inputs())
+        for index in range(len(fields)):
+            types = [0] * len(fields)
+            types[index] = 1
+            with self.assertRaises(ValidationError):
+                unpack_bof_args(pack_runof_wire_fields(fields, types=types))
+
+        runof = pack_runof_wire_fields(fields)
+        with self.assertRaisesRegex(ValidationError, "truncated"):
+            unpack_bof_args(runof[:-1])
+        with self.assertRaisesRegex(ValidationError, "trailing data"):
+            unpack_bof_args(runof + b"\x00")
+        with self.assertRaisesRegex(ValidationError, "trailing data"):
+            unpack_bof_args(pack_runof_wire_fields(fields + [b""]))
+
     def test_unpack_rejects_outer_length_mismatch(self):
-        with self.assertRaisesRegex(ValidationError, "outer length"):
+        with self.assertRaisesRegex(ValidationError, "frame header"):
             unpack_bof_args(b"\x00\x00\x00")
 
-        frame = bytearray(pack_bof_args(sample_inputs()))
+        frame = bytearray(pack_coffloader_bof_args(sample_inputs()))
         frame[:4] = (len(frame) - 3).to_bytes(4, "little")
         with self.assertRaisesRegex(ValidationError, "outer length"):
             unpack_bof_args(bytes(frame))
 
-        frame = bytearray(pack_bof_args(sample_inputs()))
+        frame = bytearray(pack_coffloader_bof_args(sample_inputs()))
         frame[:4] = (len(frame) - 5).to_bytes(4, "little")
         with self.assertRaisesRegex(ValidationError, "outer frame"):
             unpack_bof_args(bytes(frame))
 
-        frame = bytearray(pack_bof_args(sample_inputs()))
+        frame = bytearray(pack_coffloader_bof_args(sample_inputs()))
         frame[-19:-15] = (0xFFFFFFFF).to_bytes(4, "little")
         with self.assertRaisesRegex(ValidationError, "truncated inside rmd"):
             unpack_bof_args(bytes(frame))

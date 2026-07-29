@@ -13,65 +13,6 @@
 
 #define CG_BOF_LOCAL static inline __attribute__((always_inline))
 
-CG_BOF_LOCAL int cg_bof_slice_equal(const cg_slice *left, const cg_slice *right) {
-    cg_u32 i;
-
-    if (left->len != right->len) {
-        return 0;
-    }
-    for (i = 0u; i < left->len; ++i) {
-        if (left->ptr[i] != right->ptr[i]) {
-            return 0;
-        }
-    }
-    return 1;
-}
-
-CG_BOF_LOCAL int cg_bof_extract_slice(datap *parser, cg_slice *out) {
-    int raw_len = -1;
-    char *raw = BeaconDataExtract(parser, &raw_len);
-
-    if (raw_len < 0) {
-        return 0;
-    }
-    if (raw == (char *)0 && raw_len != 0) {
-        return 0;
-    }
-    out->ptr = (const cg_u8 *)raw;
-    out->len = (cg_u32)raw_len;
-    return 1;
-}
-
-CG_BOF_LOCAL int cg_bof_extract_validated_input(char *args, int alen, const cg_input *strict, cg_input *out) {
-    datap parser;
-
-    BeaconDataParse(&parser, args, alen);
-    if (!cg_bof_extract_slice(&parser, &out->csr) ||
-        !cg_bof_extract_slice(&parser, &out->ca_config) ||
-        !cg_bof_extract_slice(&parser, &out->template_name) ||
-        !cg_bof_extract_slice(&parser, &out->san_dns) ||
-        !cg_bof_extract_slice(&parser, &out->cdc) ||
-        !cg_bof_extract_slice(&parser, &out->rmd)) {
-        return 0;
-    }
-    if (cg_normalize_text_slice(&out->ca_config, CG_ERR_CA_CONFIG_INVALID) != CG_OK ||
-        cg_normalize_text_slice(&out->template_name, CG_ERR_TEMPLATE_INVALID) != CG_OK ||
-        cg_normalize_text_slice(&out->san_dns, CG_ERR_SAN_INVALID) != CG_OK ||
-        cg_normalize_text_slice(&out->cdc, CG_ERR_CDC_INVALID) != CG_OK ||
-        cg_normalize_text_slice(&out->rmd, CG_ERR_RMD_INVALID) != CG_OK) {
-        return 0;
-    }
-    if (!cg_bof_slice_equal(&out->csr, &strict->csr) ||
-        !cg_bof_slice_equal(&out->ca_config, &strict->ca_config) ||
-        !cg_bof_slice_equal(&out->template_name, &strict->template_name) ||
-        !cg_bof_slice_equal(&out->san_dns, &strict->san_dns) ||
-        !cg_bof_slice_equal(&out->cdc, &strict->cdc) ||
-        !cg_bof_slice_equal(&out->rmd, &strict->rmd)) {
-        return 0;
-    }
-    return cg_validate_input(out) == CG_OK;
-}
-
 CG_BOF_LOCAL BSTR cg_bof_bstr_from_ascii(const cg_u8 *value, cg_u32 len) {
     BSTR out;
     cg_u32 i;
@@ -166,7 +107,6 @@ __attribute__((flatten)) void go(char *args, int alen) {
     GUID iid_cert_request = {
         0x014e4840u, 0x5523u, 0x11d0u, {0x88u, 0x12u, 0x00u, 0xa0u, 0xc9u, 0x03u, 0xb8u, 0x3cu}
     };
-    cg_input strict_input;
     cg_input input;
     cg_status status;
     char attributes[CG_MAX_ATTRIBUTES_LEN + 1u];
@@ -190,13 +130,14 @@ __attribute__((flatten)) void go(char *args, int alen) {
         BeaconPrintf(CALLBACK_ERROR, "certighost: missing packed arguments");
         return;
     }
-    status = cg_parse_packed_args((const cg_u8 *)args, (cg_u32)alen, &strict_input);
+    /*
+     * Parse the raw go buffer once. RunOF and COFFLoader expose different
+     * BeaconDataParse framing, so a second Beacon extraction pass would make
+     * valid input loader-dependent.
+     */
+    status = cg_parse_packed_args((const cg_u8 *)args, (cg_u32)alen, &input);
     if (status != CG_OK) {
         BeaconPrintf(CALLBACK_ERROR, "certighost: argument validation failed: %s", cg_status_string(status));
-        return;
-    }
-    if (!cg_bof_extract_validated_input(args, alen, &strict_input, &input)) {
-        BeaconPrintf(CALLBACK_ERROR, "certighost: Beacon parser disagreed with the validated packed argument layout");
         return;
     }
     status = cg_build_attributes(&input, attributes, (cg_u32)sizeof(attributes), &attributes_len);

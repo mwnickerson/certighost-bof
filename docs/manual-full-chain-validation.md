@@ -78,7 +78,7 @@ Apollo v3 expects one `base64` CSR followed by five `string` values:
 csr_der, ca_config, template, san_dns, cdc, rmd
 ```
 
-Each `string` is packed by Apollo as UTF-8 bytes plus one terminal NUL. The BOF strips exactly one terminal NUL from text slices, rejects embedded NULs, and still accepts valid legacy all-base64 text slices without a NUL. New tasks must use the mixed form.
+In the deployed RunOF-backed Apollo `execute_coff` v3 path, `-z` appends one `\0` before `OfArg(string)` appends a second `\0`, so each typed string reaches the `type=0, length, data` record with two terminal NUL bytes and no outer payload-length word. The BOF accepts that exact RunOF form plus legacy all-base64 no-NUL text in both RunOF and COFFLoader layouts, rejects RunOF one-NUL, three-or-more-NUL, and embedded-NUL forms, and still accepts newer COFFLoader mixed frames with exactly one terminal NUL while rejecting COFFLoader double or embedded NULs. New tasks must use the mixed form.
 
 Copy the single line from `$RUN_DIR/target-dc.csr.der.b64` and replace `<CSR_DER_BASE64>` in this stock command:
 

@@ -23,6 +23,8 @@ APOLLO_COMMAND_VERSION = 3
 ENTRYPOINT = "go"
 FIELD_NAMES = ("csr_der", "ca_config", "template", "san_dns", "cdc", "rmd")
 APOLLO_FIELD_TYPES = ("base64", "string", "string", "string", "string", "string")
+RUNOF_ARG_TYPE_BINARY = 0
+DEPLOYED_EXECUTE_COFF_SHA256 = "f6dfdfc6409ac28f17ecc6b0ec6c65f458767c663d340c30f5170c88ade4b2b6"
 
 MAX_CSR_LEN = 262144
 MAX_CA_CONFIG_LEN = 512
@@ -227,9 +229,21 @@ def _reject_text_nul(value: bytes, label: str) -> None:
         raise ValidationError(f"{label} contains an embedded NUL")
 
 
-def _normalize_wire_text_field(value: bytes, label: str) -> bytes:
+def _normalize_coffloader_wire_text_field(value: bytes, label: str) -> bytes:
     if value.endswith(b"\x00"):
         value = value[:-1]
+    _reject_text_nul(value, label)
+    return value
+
+
+def _normalize_runof_wire_text_field(value: bytes, label: str) -> bytes:
+    terminal_nuls = len(value) - len(value.rstrip(b"\x00"))
+    if terminal_nuls == 0:
+        _reject_text_nul(value, label)
+        return value
+    if terminal_nuls != 2:
+        raise ValidationError(f"{label} must use no NUL or exactly two terminal NULs in RunOF framing")
+    value = value[:-2]
     _reject_text_nul(value, label)
     return value
 
@@ -255,7 +269,7 @@ def validate_stock_operator_command_inputs(inputs: CertighostInputs) -> None:
             raise ValidationError(f"{label} cannot start or end with quotes in stock execute_coff string arguments")
 
 
-def _pack_bof_payload(inputs: CertighostInputs, *, terminate_text: bool) -> bytes:
+def _pack_coffloader_payload(inputs: CertighostInputs, *, terminate_text: bool) -> bytes:
     validate_inputs(inputs)
     packed = bytearray()
     fields = inputs.ordered_fields()
@@ -268,20 +282,23 @@ def _pack_bof_payload(inputs: CertighostInputs, *, terminate_text: bool) -> byte
 
 
 def pack_bof_args(inputs: CertighostInputs) -> bytes:
-    """Return the canonical mixed Apollo outer frame received intact by go."""
-    payload = _pack_bof_payload(inputs, terminate_text=True)
+    """Return the deployed Apollo RunOF raw go buffer for the canonical command."""
+    return pack_apollo_execute_coff_arguments(inputs)
+
+
+def pack_coffloader_bof_args(inputs: CertighostInputs) -> bytes:
+    """Return the accepted newer COFFLoader outer-length frame."""
+    payload = _pack_coffloader_payload(inputs, terminate_text=True)
     return struct.pack("<I", len(payload)) + payload
 
 
 def pack_legacy_bof_args(inputs: CertighostInputs) -> bytes:
     """Return the accepted legacy all-base64 outer frame without text NULs."""
-    payload = _pack_bof_payload(inputs, terminate_text=False)
+    payload = _pack_coffloader_payload(inputs, terminate_text=False)
     return struct.pack("<I", len(payload)) + payload
 
 
-def unpack_bof_args(buffer: bytes) -> CertighostInputs:
-    if len(buffer) < 4:
-        raise ValidationError("packed buffer is truncated before the outer length")
+def _unpack_coffloader_fields(buffer: bytes) -> list[bytes]:
     payload_len = struct.unpack_from("<I", buffer, 0)[0]
     available_payload_len = len(buffer) - 4
     if payload_len > available_payload_len:
@@ -302,9 +319,40 @@ def unpack_bof_args(buffer: bytes) -> CertighostInputs:
         offset += field_len
     if offset != len(payload):
         raise ValidationError("packed buffer contains trailing data")
+    return fields
+
+
+def _unpack_runof_fields(buffer: bytes) -> list[bytes]:
+    fields: list[bytes] = []
+    offset = 0
+    for field_name in FIELD_NAMES:
+        if len(buffer) - offset < 8:
+            raise ValidationError(f"RunOF buffer is truncated before {field_name}")
+        field_type, field_len = struct.unpack_from("<II", buffer, offset)
+        offset += 8
+        if field_type != RUNOF_ARG_TYPE_BINARY:
+            raise ValidationError(f"RunOF {field_name} type must be binary (0)")
+        if field_len > len(buffer) - offset:
+            raise ValidationError(f"RunOF buffer is truncated inside {field_name}")
+        fields.append(buffer[offset : offset + field_len])
+        offset += field_len
+    if offset != len(buffer):
+        raise ValidationError("RunOF buffer contains trailing data")
+    return fields
+
+
+def unpack_bof_args(buffer: bytes) -> CertighostInputs:
+    if len(buffer) < 4:
+        raise ValidationError("packed buffer is truncated before the frame header")
+    if struct.unpack_from("<I", buffer, 0)[0] == RUNOF_ARG_TYPE_BINARY:
+        fields = _unpack_runof_fields(buffer)
+        normalize_text_field = _normalize_runof_wire_text_field
+    else:
+        fields = _unpack_coffloader_fields(buffer)
+        normalize_text_field = _normalize_coffloader_wire_text_field
     normalized_fields = [fields[0]]
     normalized_fields.extend(
-        _normalize_wire_text_field(value, field_name)
+        normalize_text_field(value, field_name)
         for field_name, value in zip(FIELD_NAMES[1:], fields[1:])
     )
     inputs = CertighostInputs(*normalized_fields)
@@ -348,18 +396,18 @@ def _pack_apollo_typed_args(typed_args: Sequence[Sequence[Any]]) -> bytes:
             if not isinstance(value, str):
                 raise ValidationError(f"coff_arguments[{index}] string value must be a string")
             try:
-                packed_value = (value + "\x00").encode("utf-8")
+                packed_value = (value + "\x00\x00").encode("utf-8")
             except UnicodeEncodeError as exc:
                 raise ValidationError(f"coff_arguments[{index}] is not valid UTF-8 text") from exc
-        packed.extend(struct.pack("<I", len(packed_value)))
+        packed.extend(struct.pack("<II", RUNOF_ARG_TYPE_BINARY, len(packed_value)))
         packed.extend(packed_value)
     if len(typed_args) != len(APOLLO_FIELD_TYPES):
         raise ValidationError("task payload must contain exactly six COFF arguments")
-    return struct.pack("<I", len(packed)) + packed
+    return bytes(packed)
 
 
 def pack_apollo_execute_coff_arguments(inputs: CertighostInputs) -> bytes:
-    """Return Apollo execute_coff v3's outer argument frame passed intact to go."""
+    """Return deployed Apollo execute_coff v3 RunOF bytes passed intact to go."""
     return _pack_apollo_typed_args(_apollo_typed_args(inputs))
 
 

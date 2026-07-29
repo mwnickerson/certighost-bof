@@ -10,6 +10,7 @@ typedef unsigned int cg_u32;
 #endif
 
 #define CG_PACKED_FIELD_COUNT 6u
+#define CG_RUNOF_ARG_TYPE_BINARY 0u
 #define CG_MAX_CSR_LEN 262144u
 #define CG_MAX_CA_CONFIG_LEN 512u
 #define CG_MAX_TEMPLATE_LEN 128u
@@ -37,6 +38,7 @@ typedef enum {
     CG_ERR_PACK_HEADER,
     CG_ERR_PACK_TRUNCATED,
     CG_ERR_PACK_TRAILING,
+    CG_ERR_PACK_TYPE,
     CG_ERR_CSR_EMPTY,
     CG_ERR_CSR_TOO_LONG,
     CG_ERR_CSR_DER,
